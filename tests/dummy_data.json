@@ -1,0 +1,25 @@
+{
+  "scene_analysis": {
+    "scene_type": "模拟首次VC路演压力问答",
+    "speaker_roles": "路演方为创业团队，投资方为外部评委；氛围偏追问与质疑。"
+  },
+  "total_score": 75,
+  "risk_points": [
+    {
+      "risk_level": "严重",
+      "tier1_general_critique": "投资人询问核心利润率时，团队未给出可验证数据，而用「大概」「可能」等模糊表述，在VC视角属于财务透明度与专业度双重红灯。",
+      "tier2_qa_alignment": "若公司QA库要求「核心财务指标须给区间与口径」，则当前回答明显违背；若库中仍允许模糊表述，则QA库需升级以匹配机构尽调标准。",
+      "improvement_suggestion": "必须直面问题。建议话术：「目前毛利率约X%，净利率约Y%；受研发投入影响净利偏低，预计Z时间随规模效应改善。」",
+      "start_word_index": 12,
+      "end_word_index": 28
+    },
+    {
+      "risk_level": "轻微",
+      "tier1_general_critique": "解释获客成本时语速过快、语气偏防御，易被解读为「听不进质疑」，损害信任。",
+      "tier2_qa_alignment": "若QA强调「先复述对方关切再答数字」，则当前节奏与结构未对齐；可检查是否缺少「先肯定再拆解」的固定模板。",
+      "improvement_suggestion": "放慢语速，先肯定投资人顾虑。建议话术：「您关心的获客成本确实是重点，我们目前的CAC是…」",
+      "start_word_index": 45,
+      "end_word_index": 55
+    }
+  ]
+}

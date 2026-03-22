@@ -1,0 +1,64 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Distribution / packaging
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# PyInstaller
+*.spec
+*.exe
+
+# Unit test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs & local env
+*.log
+
+# --- AI Pitch Coach Specific Ignores ---
+# 绝对禁止上传的隐私密钥
+.env
+.env.*
+!.env.example
+
+# 绝对禁止上传的测试录音与生成报告
+output/
+*.m4a
+*.mp3
+*.wav
+*.html
+*.pdf
+*.docx
+*.xlsx
+
+# 绝对禁止上传的打包中间产物与 EXE（与上方 dist/build 呼应）
+# 一键生成的 Windows 纯净交付文件夹
+AI路演教练_纯净交付版/
+AI路演复盘教练_纯净交付版/
