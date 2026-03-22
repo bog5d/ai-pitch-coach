@@ -40,11 +40,9 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/<your-org>/<your-repo>.git
-cd <your-repo>
+git clone https://github.com/bog5d/ai-pitch-coach.git
+cd ai-pitch-coach
 ```
-
-> 将 `<your-org>/<your-repo>` 替换为你的 GitHub 远程地址。
 
 ### 2. 安装依赖
 
