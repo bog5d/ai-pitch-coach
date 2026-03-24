@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -37,28 +36,45 @@ from openai import APIError, OpenAI
 load_dotenv(_ENV_PATH)
 
 from document_reader import extract_text_from_files
-from llm_judge import evaluate_pitch
-from report_builder import generate_html_report
-from schema import TranscriptionWord
-from transcriber import transcribe_audio
+from job_pipeline import (
+    DEFAULT_HTML_FILENAME_MASKS,
+    OTHER_SCENE_KEY,
+    PitchFileJobParams,
+    SCENE_MAP,
+    apply_html_filename_masks,
+    build_explicit_context,
+    run_pitch_file_job,
+    safe_fs_segment,
+)
+from report_builder import HtmlExportOptions
 
-# ---------------------------------------------------------------------------
-# 业务场景与默认双方角色（05 需用户手填）
-# ---------------------------------------------------------------------------
-SCENE_MAP: dict[str, str] = {
-    "01_机构路演": "被尽调企业的投融资负责人 vs 投资机构",
-    "02_高管访谈": "被尽调企业的高管 vs 投资机构",
-    "03_客户访谈": "被尽调企业的客户 vs 投资机构",
-    "04_供应商访谈": "被尽调企业的供应商 vs 投资机构",
-    "05_其他(需手动输入)": "自定义",
-}
+_SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
-OTHER_SCENE_KEY = "05_其他(需手动输入)"
+MODE_SINGLE = "单条（整场共用上下文）"
+MODE_BATCH = "批量（每文件单独被访谈人与备注）"
 
 
-def _safe_fs_segment(name: str) -> str:
-    s = re.sub(r'[<>:"/\\|?*\n\r\t]', "_", name.strip())
-    return s or "未命名批次"
+def _parse_filename_mask_lines(raw: str) -> dict[str, str]:
+    """解析侧边栏「每行：原名⇒代号」或 原名=>代号 或 原名=代号。"""
+    out: dict[str, str] = {}
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        for sep in ("⇒", "=>", "->", "="):
+            if sep in s:
+                a, b = s.split(sep, 1)
+                k, v = a.strip(), b.strip()
+                if k and v:
+                    out[k] = v
+                break
+    return out
+
+
+def _merge_html_filename_masks(sidebar_text: str) -> dict[str, str]:
+    merged = dict(DEFAULT_HTML_FILENAME_MASKS)
+    merged.update(_parse_filename_mask_lines(sidebar_text))
+    return merged
 
 
 def _env_configured(key: str) -> bool:
@@ -68,40 +84,6 @@ def _env_configured(key: str) -> bool:
 
 def _parse_sensitive_words(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
-
-
-def _mask_words_for_llm(
-    words: list[TranscriptionWord],
-    sensitive_words: list[str],
-) -> list[TranscriptionWord]:
-    if not sensitive_words:
-        return words
-    out: list[TranscriptionWord] = []
-    for w in words:
-        t = w.text
-        for kw in sensitive_words:
-            if kw and kw in t:
-                t = t.replace(kw, "***")
-        if t != w.text:
-            out.append(w.model_copy(update={"text": t}))
-        else:
-            out.append(w)
-    return out
-
-
-def _build_explicit_context(
-    category: str,
-    project_name: str,
-) -> dict[str, str]:
-    if category == OTHER_SCENE_KEY:
-        roles = (st.session_state.get("custom_roles_other") or "").strip()
-    else:
-        roles = SCENE_MAP.get(category, "未指定")
-    return {
-        "biz_type": category,
-        "exact_roles": roles or "未指定",
-        "project_name": (project_name or "").strip() or "未指定",
-    }
 
 
 def _ping_dashscope_compatible(api_key: str) -> tuple[bool, str]:
@@ -247,6 +229,30 @@ def main() -> None:
             help="在调用大模型前，对转写词文本做替换为 ***。",
         )
 
+        filename_mask_input = st.text_area(
+            "📤 外发 HTML 文件名脱敏（每行：原名⇒代号）",
+            value="",
+            height=100,
+            help=(
+                "仅改变「复盘报告.html」的文件名，便于外发；内置已含 迪策资本⇒DC资本、邓勇⇒DY。"
+                "可追加一行一条，支持 ⇒、=>、= 分隔。"
+            ),
+        )
+        mask_html_body = st.checkbox(
+            "HTML 正文同步脱敏（场景与翻车卡片文案按上表替换）",
+            value=False,
+            help=(
+                "开启后，仅影响生成的 .html 展示；同目录 *_analysis_report.json 仍为完整原文，便于内部分析。"
+                "外发 HTML 时建议勾选。"
+            ),
+        )
+        html_watermark = st.text_input(
+            "HTML 页脚水印（可选）",
+            value="",
+            placeholder="例如：仅供内部评审，禁止外传",
+            help="显示在报告页脚醒目位置，便于外发合规提示。",
+        )
+
         st.subheader("密钥环境变量")
         st.caption(
             f"{'✅' if _env_configured('DASHSCOPE_API_KEY') else '❌'} DASHSCOPE_API_KEY（阿里云）"
@@ -263,18 +269,46 @@ def main() -> None:
             "点击「💾 保存并测试连接」直至双路绿灯后，方可开始生成报告。"
         )
 
+    scene_options = [_SCENE_SELECT_PLACEHOLDER] + list(SCENE_MAP.keys())
     col1, col2 = st.columns(2)
     with col1:
         category = st.selectbox(
-            "业务大类",
-            options=list(SCENE_MAP.keys()),
+            "业务大类（必选）",
+            options=scene_options,
             index=0,
+            help="请先明确业务场景后再生成，避免 AI 用错复盘视角。",
         )
     with col2:
         batch_name = st.text_input(
-            "项目/批次名称",
-            placeholder="例如：泰亚投资、福创投",
-            help="将作为子文件夹名称的一部分。",
+            "项目/批次名称（必填）",
+            placeholder="例如：某机构代号、尽调批次",
+            help="将作为子文件夹名称的一部分，并进入 AI 上下文。",
+        )
+
+    process_mode = st.radio(
+        "处理模式",
+        options=[MODE_SINGLE, MODE_BATCH],
+        index=0,
+        horizontal=True,
+        help=(
+            "单条：整场共用一名被访谈人，适合一场录音或多人同语境。"
+            "批量：每个上传文件单独填写被访谈人与备注，适合一人一段录音。"
+        ),
+        key="process_mode_radio",
+    )
+
+    interviewee = ""
+    if process_mode == MODE_SINGLE:
+        interviewee = st.text_input(
+            "被访谈人（必填）",
+            placeholder="例如：高管姓名或对内代号",
+            help="本场录音对应的被访谈对象，写入 AI 上下文。",
+            key="interviewee_single",
+        )
+    else:
+        st.caption(
+            "批量模式：上传音频后，在下方「逐文件信息」中为 **每个文件** 填写被访谈人（必填）与备注（可选），"
+            "将分别写入该段转写的 AI 上下文。"
         )
 
     if category == OTHER_SCENE_KEY:
@@ -310,6 +344,35 @@ def main() -> None:
         accept_multiple_files=True,
     )
 
+    uploaded_list: list = []
+    if uploaded is not None:
+        uploaded_list = list(uploaded) if isinstance(uploaded, (list, tuple)) else [uploaded]
+
+    if process_mode == MODE_BATCH and uploaded_list:
+        st.subheader("逐文件信息（进入 AI 上下文）")
+        for idx, uf in enumerate(uploaded_list):
+            st.markdown(f"**文件 {idx + 1}：** `{uf.name}`")
+            c_iv, c_note = st.columns(2)
+            with c_iv:
+                st.text_input(
+                    "被访谈人（必填）",
+                    key=f"batch_iv_{idx}",
+                    placeholder="本段录音对应的对象",
+                    help="仅作用于当前这一条录音的打分与复盘。",
+                )
+            with c_note:
+                st.text_input(
+                    "本段备注（可选）",
+                    key=f"batch_note_{idx}",
+                    placeholder="角色、场次、关注点等",
+                    help="写入 AI 上下文本段补充说明。",
+                )
+
+    st.info(
+        "💡 **建议**：开始生成前，在上方「上传QA文件」中上传 **内部 QA 口径**、**访谈纪要** 或 **对客口径 PDF/Word**，"
+        "便于 AI 对照标准找茬；未上传时仍会生成报告，但对齐深度可能下降。"
+    )
+
     run = st.button(
         "开始生成批量复盘报告",
         type="primary",
@@ -320,9 +383,32 @@ def main() -> None:
         st.info("配置侧边栏与业务场景，上传音频后点击按钮开始。")
         return
 
-    if not uploaded:
+    if not uploaded_list:
         st.warning("请先上传至少一个音频文件。")
         return
+
+    if category == _SCENE_SELECT_PLACEHOLDER:
+        st.error("请先在下拉框中选择真实的「业务大类」，不能保留「请先选择业务场景」。")
+        return
+
+    if not (batch_name or "").strip():
+        st.error("请填写「项目/批次名称」（必填）。")
+        return
+
+    if process_mode == MODE_SINGLE:
+        iv_single = (st.session_state.get("interviewee_single") or "").strip()
+        if not iv_single:
+            st.error("单条模式下请填写「被访谈人」（必填）。")
+            return
+        interviewee = iv_single
+    else:
+        for idx in range(len(uploaded_list)):
+            iv = (st.session_state.get(f"batch_iv_{idx}") or "").strip()
+            if not iv:
+                st.error(
+                    f"批量模式下请为文件「{uploaded_list[idx].name}」填写被访谈人（必填）。"
+                )
+                return
 
     if category == OTHER_SCENE_KEY:
         cr = (st.session_state.get("custom_roles_other") or "").strip()
@@ -331,8 +417,8 @@ def main() -> None:
             return
 
     sensitive_words = _parse_sensitive_words(sensitive_words_input)
+    html_mask_map = _merge_html_filename_masks(filename_mask_input)
     project_name = (batch_name or "").strip()
-    explicit_context = _build_explicit_context(category, project_name)
 
     qa_files_list: list = []
     if qa_upload is not None:
@@ -346,7 +432,7 @@ def main() -> None:
         st.error(f"无法创建或使用归档根目录：{e}")
         return
 
-    target_dir = root_path / _safe_fs_segment(category) / _safe_fs_segment(batch_name)
+    target_dir = root_path / safe_fs_segment(category) / safe_fs_segment(batch_name)
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -356,8 +442,20 @@ def main() -> None:
     progress_bar = st.progress(0)
     errors: list[str] = []
 
-    n = len(uploaded)
-    for i, uf in enumerate(uploaded):
+    custom_roles = (
+        (st.session_state.get("custom_roles_other") or "").strip()
+        if category == OTHER_SCENE_KEY
+        else ""
+    )
+
+    html_opts = HtmlExportOptions(
+        footer_watermark=(html_watermark or "").strip(),
+        content_replace_map=html_mask_map if mask_html_body else None,
+        show_generated_timestamp=True,
+    )
+
+    n = len(uploaded_list)
+    for i, uf in enumerate(uploaded_list):
         fname = uf.name
         stem = Path(fname).stem
 
@@ -379,39 +477,44 @@ def main() -> None:
                     state="running",
                 )
 
+                if process_mode == MODE_SINGLE:
+                    per_iv = (interviewee or "").strip()
+                    per_note = ""
+                else:
+                    per_iv = (st.session_state.get(f"batch_iv_{i}") or "").strip()
+                    per_note = (st.session_state.get(f"batch_note_{i}") or "").strip()
+
+                explicit_context = build_explicit_context(
+                    category,
+                    project_name,
+                    per_iv,
+                    session_notes=per_note,
+                    recording_label=uf.name,
+                    custom_roles_other=custom_roles,
+                )
+
                 trans_json = target_dir / f"{stem}_transcription.json"
-                words = transcribe_audio(audio_path, out_json_path=trans_json)
+                analysis_json = target_dir / f"{stem}_analysis_report.json"
+                html_stem = apply_html_filename_masks(stem, html_mask_map)
+                html_name = f"{html_stem}_复盘报告.html"
+                html_path = target_dir / html_name
 
-                status.update(
-                    label=f"🕵️ 听写完毕！共抓取 {len(words)} 个词汇。正在执行商业机密脱敏打码...",
-                    state="running",
-                )
-                words_for_llm = _mask_words_for_llm(words, sensitive_words)
-
-                status.update(
-                    label="🧠 正在请出顶级 VC 大脑，戴上老花镜逐字找茬中 (最耗时的一步，让子弹飞一会儿)...",
-                    state="running",
-                )
-                report = evaluate_pitch(
-                    words_for_llm,
-                    model_choice="deepseek",
+                params = PitchFileJobParams(
+                    transcription_json_path=trans_json,
+                    analysis_json_path=analysis_json,
+                    html_output_path=html_path,
+                    sensitive_words=sensitive_words,
                     explicit_context=explicit_context,
                     qa_text=qa_text,
+                    model_choice="deepseek",
+                    html_export_options=html_opts,
                 )
 
-                status.update(
-                    label="✂️ 找茬完毕！正在疯狂裁剪原声音频，为您装订绝美复盘报告...",
-                    state="running",
+                run_pitch_file_job(
+                    audio_path,
+                    params,
+                    on_status=lambda m: status.update(label=m, state="running"),
                 )
-                analysis_json = target_dir / f"{stem}_analysis_report.json"
-                analysis_json.write_text(
-                    json.dumps(report.model_dump(), ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-
-                html_name = f"{stem}_复盘报告.html"
-                html_path = target_dir / html_name
-                generate_html_report(audio_path, words, report, html_path)
 
                 status.update(
                     label=f"✅ {uf.name} 报告新鲜出炉！",

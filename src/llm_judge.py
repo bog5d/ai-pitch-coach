@@ -105,10 +105,15 @@ def format_transcript_for_llm(words: List[TranscriptionWord]) -> str:
 def _normalize_explicit_context(explicit_context: dict[str, Any] | None) -> dict[str, str]:
     """缺省键时填占位，避免 Prompt 中出现 None。"""
     base = explicit_context or {}
+    notes = str(base.get("session_notes") or "").strip()
+    rec = str(base.get("recording_label") or "").strip()
     return {
         "biz_type": str(base.get("biz_type") or "未指定"),
         "exact_roles": str(base.get("exact_roles") or "未指定"),
         "project_name": str(base.get("project_name") or "未指定"),
+        "interviewee": str(base.get("interviewee") or "未指定"),
+        "session_notes": notes if notes else "无",
+        "recording_label": rec if rec else "未指定",
     }
 
 
@@ -126,6 +131,9 @@ def _build_system_prompt(
 当前业务场景：{ctx["biz_type"]}
 双方角色设定公理：{ctx["exact_roles"]}
 当前投资机构/项目名称：{ctx["project_name"]}
+被访谈对象（标识）：{ctx["interviewee"]}
+当前录音文件标识：{ctx["recording_label"]}
+本段补充说明（用户备注，可与转写对照）：{ctx["session_notes"]}
 </CONTEXT>
 <KNOWLEDGE_BASE>
 {kb_block}
@@ -170,7 +178,8 @@ def evaluate_pitch(
 ) -> AnalysisReport:
     """
     使用三巨头之一对逐字稿做场景洞察 + 双层诊断，返回 AnalysisReport。
-    explicit_context 建议包含：biz_type, exact_roles, project_name
+    explicit_context 建议包含：biz_type, exact_roles, project_name, interviewee；
+    可选 session_notes（本段备注）、recording_label（录音文件名标识）。
     """
     if model_choice not in ROUTER:
         raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
@@ -277,6 +286,9 @@ if __name__ == "__main__":
         "biz_type": "CLI默认",
         "exact_roles": "未指定",
         "project_name": "未指定",
+        "interviewee": "未指定",
+        "session_notes": "无",
+        "recording_label": "未指定",
     }
 
     try:

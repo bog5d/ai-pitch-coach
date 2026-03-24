@@ -27,6 +27,7 @@
 | **阿里云大模型极速转写** | 百炼 DashScope 兼容链路 + 多引擎兜底，输出 **词级时间戳** 转写 |
 | **DeepSeek 毒舌对齐分析** | 结构化打分与「找茬」点评，显式业务上下文 + QA 注入 |
 | **非对称音频切割** | 按词索引锚定切片，非对称缓冲（起止留白可配），报告内嵌 **Base64 音频** |
+| **外发合规（HTML）** | 文件名脱敏；可选 **正文同规则替换**；**页脚水印**；`*_analysis_report.json` 默认保留完整原文供内部分析 |
 
 ---
 
@@ -71,6 +72,15 @@ streamlit run app.py
 
 ---
 
+## 📦 主交付形态（推荐）
+
+| 形态 | 适用 | 说明 |
+| :--- | :--- | :--- |
+| **`build_release.py` 纯净包 + BAT** | **生产与同事分发（首选）** | 与开发环境一致的 `streamlit run app.py`；体积小、可维护、易排障。 |
+| **PyInstaller EXE** | 实验 / 必须「单 exe 目录」分发时 | 见 `PACKAGING_EXE.md`；Streamlit 冻结环境更脆弱，出问题请退回 BAT 包。 |
+
+---
+
 ## 📦 小白专属 · Windows 无代码交付
 
 仓库内置 **`build_release.py`**：一键生成面向 Windows 同事的 **纯净交付包**（含 **`一键启动系统.bat`**、`requirements.txt`、`app.py`、`src/` 等白名单资源，**不含** `.env` / 测试数据 / `output`）。
@@ -82,6 +92,10 @@ python build_release.py
 生成目录：**`AI路演教练_纯净交付版/`** — 可直接拷贝至 U 盘分发；同事双击 BAT 即可完成依赖安装与启动。
 
 > 更细的操作说明见根目录 **`小白保姆级操作手册.md`**（若随仓分发）。
+
+### Windows EXE 单体（开发者可选）
+
+使用根目录 **`run_exe.py`** 作为 PyInstaller 入口，打包后进入 **`dist/AI路演复盘教练/`** 运行生成的 **`.exe`**（`--onedir` 目录分发）。完整命令、Python 3.13 / `setuptools` 注意事项见 **`PACKAGING_EXE.md`**。
 
 ---
 
@@ -97,10 +111,11 @@ python build_release.py
 
 | 路径 | 说明 |
 | :--- | :--- |
-| `app.py` | Streamlit 企业控制台（密钥自检、批量归档） |
-| `src/` | 转写、打分、报告拼装、文档读取、路径两栖模块等 |
+| `app.py` | Streamlit 企业控制台（密钥自检、批量归档；业务编排见 `src/job_pipeline.py`） |
+| `src/` | 转写、打分、报告拼装、文档读取、`job_pipeline` 可复用编排等 |
 | `tests/` | 测试与黄金数据（大文件见 `.gitignore`） |
 | `build_release.py` | 纯净交付包打包脚本 |
+| `run_exe.py` / `PACKAGING_EXE.md` | EXE 启动器与 PyInstaller 说明 |
 
 ---
 

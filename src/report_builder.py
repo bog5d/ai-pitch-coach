@@ -10,6 +10,8 @@ import io
 import json
 import os
 import sys
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 
@@ -24,7 +26,58 @@ from jinja2 import Environment, select_autoescape
 from pydantic import ValidationError
 from pydub import AudioSegment
 
-from schema import AnalysisReport, TranscriptionWord
+from schema import AnalysisReport, RiskPoint, SceneAnalysis, TranscriptionWord
+
+
+@dataclass
+class HtmlExportOptions:
+    """
+    仅影响生成的 HTML 展示：不修改磁盘上的 analysis JSON。
+    content_replace_map 与文件名脱敏规则相同时，可传入同一 dict（长键优先替换）。
+    """
+
+    footer_watermark: str = ""
+    content_replace_map: dict[str, str] | None = None
+    show_generated_timestamp: bool = True
+
+
+def _apply_text_masks(s: str, masks: dict[str, str]) -> str:
+    if not masks:
+        return s
+    out = s
+    for old in sorted(masks.keys(), key=len, reverse=True):
+        out = out.replace(old, masks[old])
+    return out
+
+
+def _report_for_html_display(
+    report: AnalysisReport,
+    masks: dict[str, str] | None,
+) -> AnalysisReport:
+    if not masks:
+        return report
+    sa = report.scene_analysis
+    scene = SceneAnalysis(
+        scene_type=_apply_text_masks(sa.scene_type, masks),
+        speaker_roles=_apply_text_masks(sa.speaker_roles, masks),
+    )
+    new_risks: List[RiskPoint] = []
+    for rp in report.risk_points:
+        new_risks.append(
+            RiskPoint(
+                risk_level=rp.risk_level,
+                tier1_general_critique=_apply_text_masks(rp.tier1_general_critique, masks),
+                tier2_qa_alignment=_apply_text_masks(rp.tier2_qa_alignment, masks),
+                improvement_suggestion=_apply_text_masks(rp.improvement_suggestion, masks),
+                start_word_index=rp.start_word_index,
+                end_word_index=rp.end_word_index,
+            )
+        )
+    return AnalysisReport(
+        scene_analysis=scene,
+        total_score=report.total_score,
+        risk_points=new_risks,
+    )
 from runtime_paths import get_project_root, get_writable_app_root
 
 # ---------------------------------------------------------------------------
@@ -112,6 +165,9 @@ def _risk_time_range(
 def _render_html(
     report: AnalysisReport,
     cards: list[dict],
+    *,
+    watermark_line: str = "",
+    generated_footer_line: str = "",
 ) -> str:
     env = Environment(autoescape=select_autoescape(["html", "xml"]))
     tpl = env.from_string(_HTML_TEMPLATE)
@@ -119,6 +175,8 @@ def _render_html(
         scene=report.scene_analysis,
         total_score=report.total_score,
         cards=cards,
+        watermark_line=watermark_line or "",
+        generated_footer_line=generated_footer_line or "",
     )
 
 
@@ -127,19 +185,27 @@ def generate_html_report(
     words_list: List[TranscriptionWord],
     report_obj: AnalysisReport,
     output_html_path: str | Path,
+    *,
+    export_options: HtmlExportOptions | None = None,
 ) -> Path:
     """
     动态拼装：根据磁盘上的录音文件 + 内存中的转写与报告对象，生成 Base64 内嵌 MP3 的单文件 HTML。
+    export_options 仅影响 HTML 正文/页脚展示；analysis JSON 由调用方另行落盘，保持完整口径。
     """
     ap = Path(audio_path)
     if not ap.is_file():
         raise FileNotFoundError(f"缺少录音文件: {ap}")
 
+    opts = export_options or HtmlExportOptions()
+    report_display = _report_for_html_display(
+        report_obj, opts.content_replace_map
+    )
+
     by_index = _words_to_index_map(words_list)
     audio_seg = AudioSegment.from_file(str(ap))
 
     cards: list[dict] = []
-    for idx, rp in enumerate(report_obj.risk_points, start=1):
+    for idx, rp in enumerate(report_display.risk_points, start=1):
         t0, t1 = _risk_time_range(
             by_index, rp.start_word_index, rp.end_word_index
         )
@@ -157,7 +223,19 @@ def generate_html_report(
             }
         )
 
-    html = _render_html(report_obj, cards)
+    ts = ""
+    if opts.show_generated_timestamp:
+        ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    gen_line = "AI 路演教练与复盘系统 · report_builder · 词级索引零误差切割"
+    if ts:
+        gen_line = f"{gen_line} · 生成 {ts}"
+
+    html = _render_html(
+        report_display,
+        cards,
+        watermark_line=(opts.footer_watermark or "").strip(),
+        generated_footer_line=gen_line,
+    )
     out = Path(output_html_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
@@ -357,6 +435,14 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             font-size: 0.8rem;
             color: var(--muted);
         }
+        .watermark {
+            margin-bottom: 12px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            border: 1px dashed rgba(251,191,36,0.35);
+            color: var(--warn);
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -420,7 +506,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         </article>
         {% endfor %}
 
-        <footer>AI 路演教练与复盘系统 · report_builder · 词级索引零误差切割</footer>
+        <footer>
+            {% if watermark_line %}
+            <p class="watermark">{{ watermark_line }}</p>
+            {% endif %}
+            <p>{{ generated_footer_line }}</p>
+        </footer>
     </div>
 </body>
 </html>
