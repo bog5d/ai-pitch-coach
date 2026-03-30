@@ -2,7 +2,7 @@
 # 说明：ffmpeg 路径仅来自 imageio_ffmpeg.get_ffmpeg_exe()，不依赖系统 PATH。
 """
 终极报告拼装：真实 m4a + 词级时间戳 + AnalysisReport → 单文件 Base64 内嵌 MP3 的 HTML。
-仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 

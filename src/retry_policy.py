@@ -1,7 +1,7 @@
 """
 HTTP / OpenAI 可重试错误上的指数退避（2s / 4s / 8s，最多 4 次尝试 = 首击 + 3 次重试）。
 不引入第三方依赖，供 transcriber / llm_judge 共用。
-仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 

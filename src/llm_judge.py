@@ -1,7 +1,8 @@
 # 依赖：pip install openai python-dotenv pydantic
 """
 LLM 逻辑打分模块 2.0：三巨头模型路由（DeepSeek / Kimi / Qwen-Max）+ AnalysisReport 契约。
-仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐；含量化扣分引擎与定向狙击 Prompt）。
+仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐；含量化扣分引擎与定向狙击 Prompt）。
+V7.0：转写与 QA 分池限长，超长 QA 头尾智能截断 + on_notice / UI 提示。
 支持显式业务上下文与 QA 知识库注入，结构化防幻觉 Prompt。
 """
 from __future__ import annotations
@@ -30,8 +31,28 @@ load_dotenv(get_writable_app_root() / ".env")
 
 logger = logging.getLogger(__name__)
 
-# 转写 + QA 注入前总字符上限（优先截断 QA，避免撑爆上下文）
-MAX_COMBINED_TRANSCRIPT_QA_CHARS = 60_000
+# V7.0：录音转写与 QA 补充材料字数池物理隔离
+MAX_TRANSCRIPT_CHARS = 80_000
+MAX_QA_CHARS = 30_000
+
+MIDDLE_OMIT_MARK = "\n...[内容过长，系统已智能省略中间部分]...\n"
+
+
+def truncate_qa_text(qa: str, max_chars: int = MAX_QA_CHARS) -> tuple[str, bool]:
+    """
+    超长 QA 掐头去尾，中间用省略标记连接。
+    返回 (处理后文本, 是否发生过截断)；结果长度保证不超过 max_chars。
+    """
+    q = (qa or "").strip()
+    if len(q) <= max_chars:
+        return q, False
+    m = len(MIDDLE_OMIT_MARK)
+    if max_chars <= m:
+        return q[:max_chars], True
+    inner = max_chars - m
+    head_n = inner // 2
+    tail_n = inner - head_n
+    return q[:head_n] + MIDDLE_OMIT_MARK + q[-tail_n:], True
 
 # 三巨头官方兼容 OpenAI 的路由配置
 ROUTER: dict[str, dict[str, str]] = {
@@ -239,14 +260,18 @@ def evaluate_pitch(
     if not transcript.strip():
         raise ValueError("转写词列表为空，无法评估")
 
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        transcript = transcript[:MAX_TRANSCRIPT_CHARS]
+        logger.warning(
+            "转写已超过 MAX_TRANSCRIPT_CHARS=%d，已截取前缀以稳定上下文",
+            MAX_TRANSCRIPT_CHARS,
+        )
+
     qa_use = (qa_text or "").strip()
-    combined = len(transcript) + len(qa_use)
-    if combined > MAX_COMBINED_TRANSCRIPT_QA_CHARS:
-        allow_qa = max(0, MAX_COMBINED_TRANSCRIPT_QA_CHARS - len(transcript))
-        qa_use = qa_use[:allow_qa]
+    qa_use, qa_truncated = truncate_qa_text(qa_use, MAX_QA_CHARS)
+    if qa_truncated:
         warn_msg = (
-            "⚠️ QA 补充材料过长，已自动截断以保证 AI 正常运行"
-            f"（原合计约 {combined} 字，已限制在 {MAX_COMBINED_TRANSCRIPT_QA_CHARS} 字内）"
+            "⚠️ QA 补充材料字数超载（超过3万字），为防止 AI 崩溃，已截取核心头尾条款"
         )
         logger.warning("%s", warn_msg)
         if callable(on_notice):

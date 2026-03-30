@@ -1,6 +1,6 @@
 """
 极端边界自动化测试：不依赖 Streamlit、不人肉点击。
-仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
 运行：python tests/test_extreme_cases.py
 """
 from __future__ import annotations

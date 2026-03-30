@@ -3,7 +3,7 @@ MIT License
 Copyright (c) 2026 wang bo
 
 Product / 项目：AI 路演与访谈复盘教练（AI Pitch Coach）
-Release track / 发版主线：V6.2 — align with `build_release.py` → `CURRENT_VERSION` when distributing.
+Release track / 发版主线：V7.0 — align with `build_release.py` → `CURRENT_VERSION` when distributing.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

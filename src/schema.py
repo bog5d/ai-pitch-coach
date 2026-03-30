@@ -1,4 +1,4 @@
-"""Pydantic 数据契约层 — 仓库发版 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。"""
+"""Pydantic 数据契约层 — 仓库发版 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。"""
 
 from pydantic import BaseModel, Field
 from typing import List, Literal

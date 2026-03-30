@@ -1,5 +1,5 @@
 """
-V4.0 / V6.2 幽灵清道夫：静默删除过期中间 JSON，不碰原始录音与 HTML 成品。（发版与 build_release.CURRENT_VERSION 对齐）
+V4.0 / V6.2 / V7.0 幽灵清道夫：静默删除过期中间 JSON，不碰原始录音与 HTML 成品。（发版与 build_release.CURRENT_VERSION 对齐）
 """
 from __future__ import annotations
 

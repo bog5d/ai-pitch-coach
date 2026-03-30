@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 一键打包：清理旧构建 + PyInstaller（含 plotly 全量收集，修复 _validators.json 缺失）。
-仓库发版 V6.2（与 build_release.py → CURRENT_VERSION 对齐；首选交付仍为 BAT 纯净包）。
+仓库发版 V7.0（与 build_release.py → CURRENT_VERSION 对齐；首选交付仍为 BAT 纯净包）。
 在项目根目录执行: python build_exe.py
 """
 from __future__ import annotations

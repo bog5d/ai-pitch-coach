@@ -2,7 +2,7 @@
 """
 多格式 QA 文档文本抽取：PDF / Word / Excel / TXT / MD。
 统一截断 max_chars，防止 Token 爆仓。
-仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 

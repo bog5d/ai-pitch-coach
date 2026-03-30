@@ -2,7 +2,7 @@
 阶段 2：无脑物理切割机 — 独立验证链路
 词级索引映射 -> 音频切割（wave）-> Base64 注入 HTML
 零 ffmpeg / pydub，仅依赖 Python 标准库 + Pydantic。
-仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐；开发/回归工具链，非 Streamlit 主路径）。
+仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐；开发/回归工具链，非 Streamlit 主路径）。
 """
 from __future__ import annotations
 

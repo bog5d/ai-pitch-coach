@@ -22,11 +22,12 @@
 - [x] **阶段 4：前端组装**
   - Streamlit 控制台（`app.py`）；**编排层**已抽至 `src/job_pipeline.py`（`run_pitch_file_job`），便于 CLI/自动化复用。
 - [x] **阶段 4.1：交付与合规增强（v2.x）**
-  - **主交付**：`build_release.py` BAT 纯净包（推荐）；目录名带 `CURRENT_VERSION`（如 `AI路演教练_纯净交付版_V6.2`）；随包 **`V6.2_新功能与体验大升级.txt`** 等业务说明；EXE 见 `PACKAGING_EXE.md`（实验性）。
+  - **主交付**：`build_release.py` BAT 纯净包（推荐）；目录名带 `CURRENT_VERSION`（如 `AI路演教练_纯净交付版_V7.0`）；随包 **`V7.0_新功能与体验大升级.txt`** / `V6.2_…` 等业务说明（见脚本白名单）；EXE 见 `PACKAGING_EXE.md`（实验性）。
   - **外发 HTML**：文件名脱敏 + 可选正文同规则替换 + 页脚水印（`HtmlExportOptions`，JSON 分析件保持原文）。
 - [x] **阶段 4.2：V6.2 网关与打分（摘要）**
   - **智能音频网关**：`audio_preprocess` + `app.py` 大文件前置压缩后再 `transcribe_audio`。
   - **量化扣分**：`RiskPoint.score_deduction` + `llm_judge` Prompt；**定向核实**：`session_notes` / 🎯 输入框注入 CONTEXT。
+- [x] **阶段 4.3：V7.0 审查台本地草稿（`draft_manager` + `.drafts/`）与 QA/转写分池截断（`llm_judge`）**
 
 ## 四、 给 AI 助手 (Cursor) 的行为规范
 每次回答前，请仔细复习本文件。
@@ -36,7 +37,7 @@
 
 ## 🚀 v3.0 架构演进路线图 (Roadmap)
 
-**当前状态 (v2.x)**：文档解析使用“大力出奇迹”的 15,000 字硬截断直喂方案（`document_reader.extract_text_from_files`，默认 `max_chars=15000`）。在典型几十页 QA 场景下，稳定性与速度可接受。
+**当前状态 (V7.0)**：`app.py` 侧多文件 QA 合并后 **`extract_text_from_files` 默认 `max_chars=30000`**；送入 `llm_judge.evaluate_pitch` 前对 **转写与 QA 分池限长**（`MAX_TRANSCRIPT_CHARS` / `MAX_QA_CHARS`），超长 QA **头尾截断**并 UI 提示。在典型几十页 QA 场景下，稳定性与速度可接受。
 
 **产品提示（已实现/可配置）**：超大文档时应在业务侧拆分或提高截断阈值前评估 Token 与成本；侧边栏与 README 已强调「先 PDF/Word、非 PPT」等约束。
 

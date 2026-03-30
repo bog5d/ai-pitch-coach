@@ -1,6 +1,6 @@
 """
 job_pipeline 纯函数与上下文契约（不调用外网 API）。
-仓库发版 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+仓库发版 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 运行：python tests/test_job_pipeline.py
 """
 from __future__ import annotations

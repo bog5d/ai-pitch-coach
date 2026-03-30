@@ -1,4 +1,4 @@
-# AI 路演教练 — 架构与数据流（V3.1 / V4.0 / V6.2）
+# AI 路演教练 — 架构与数据流（V3.1 / V4.0 / V6.2 / V7.0）
 
 本文档供后续开发者与 AI 接管时快速建立心智模型：**模块职责、数据流、人机协同与商业级防护**。
 
@@ -8,11 +8,12 @@
 
 | 层级 | 组件 | 职责 |
 |------|------|------|
-| UI | `app.py`（Streamlit） | API 配置、按录音上下文、**V6.2 智能音频网关**（`st.status` + `smart_compress_media`）、触发 `job_pipeline`、**V3 审查台**（`session_state`）、锁定后 `generate_html_report` |
+| UI | `app.py`（Streamlit） | API 配置、按录音上下文、**V6.2 智能音频网关**（`st.status` + `smart_compress_media`）、触发 `job_pipeline`、**V3 审查台**（`session_state`）、**V7.0 草稿恢复条**与静默落盘、锁定后 `generate_html_report` |
+| 草稿 | `src/draft_manager.py` | **本地草稿静默持久化**：可写根下隐藏目录 `.drafts/`，`temp_*.json` → `os.replace` 原子落盘为 `draft_*.json`；`load_draft` / `list_available_drafts` 供断线恢复 |
 | 网关 | `src/audio_preprocess.py` | ≥10MB：`ffmpeg` 抽视频轨 + 16k 单声道 MP3；失败回退原文件 |
 | 编排 | `src/job_pipeline.py` | 转写 → 脱敏 → LLM → 写 JSON；可选跳过 HTML（供审查后再导出） |
 | 转写 | `src/transcriber.py` | 硅基流动优先、阿里云 DashScope 兜底；**V4 请求指数退避** |
-| 评判 | `src/llm_judge.py` | DeepSeek/Kimi/Qwen 路由；**V6.2 量化扣分引擎**（`score_deduction` + Prompt 自下而上扣分）；**定向狙击**（`session_notes`→CONTEXT）；**V4 字符上限截断 QA**、**退避重试** |
+| 评判 | `src/llm_judge.py` | DeepSeek/Kimi/Qwen 路由；**V6.2 量化扣分引擎**（`score_deduction` + Prompt 自下而上扣分）；**定向狙击**（`session_notes`→CONTEXT）；**V7.0 QA 动态字数隔离**（转写 `MAX_TRANSCRIPT_CHARS`、QA `MAX_QA_CHARS` 分池；超长 QA **头尾保留 + 中间省略标记**）；超限经 `on_notice` 与 UI **黄字提示**；**退避重试** |
 | 报告 | `src/report_builder.py` | **ffmpeg 子进程**切片 → **Base64 MP4(AAC)** 内嵌单文件 HTML；无 pydub |
 | 契约 | `src/schema.py` | `AnalysisReport`、`RiskPoint`（含 **`score_deduction`**、`deduction_reason`、`is_manual_entry` 等） |
 | 诊断 | `src/system_debug_log.py` | 统一 `debug.log`（可写根目录） |
@@ -32,7 +33,8 @@
    - `evaluate_pitch` → `AnalysisReport` → `*_analysis_report.json`
 5. **不生成最终 HTML**；`app.py` 将 `report.model_dump()`（含 UI 用 `_rid`）与 `words` 写入 `st.session_state`：
    - `report_draft_{stem}`、`words_{stem}`、`v3_ctx_{stem}`、`v3_review_stems`
-6. 用户在审查台编辑后点击 **锁定** → `_v3_finalize_stem`：`copy.deepcopy` 汇总 widget → 校验 → 覆盖 JSON → `generate_html_report`。
+6. **V7.0**：审查台每次渲染时由 `draft_manager.save_draft(session_id, …)` 将上述快照 **静默写入** `.drafts/`；冷启动且侧栏无在审任务时，可 **一键恢复** 最近草稿。
+7. 用户在审查台编辑后点击 **锁定** → `_v3_finalize_stem`：`copy.deepcopy` 汇总 widget → 校验 → 覆盖 JSON → `generate_html_report`。
 
 ---
 
@@ -69,7 +71,7 @@
 
 ### 5.3 Token/字符防线与退避
 
-- `llm_judge.evaluate_pitch`：`len(transcript) + len(qa) > 60000` 时 **优先截断 `qa_text`**，经 `on_notice`（即 pipeline 的 `_line`）推送 **Streamlit 状态行** 与 **warning 日志**。
+- **V7.0**：`llm_judge.evaluate_pitch` 对 **转写** 与 **QA** **分池限长**（`MAX_TRANSCRIPT_CHARS` / `MAX_QA_CHARS`），不再使用「转写+QA 合计 6 万字」单桶截断。QA 超限时 **掐头去尾** 并插入省略说明，经 `on_notice`（pipeline `_line`）与 **`app.py` 黄字 `st.warning`** 提示业务侧；**warning 日志**同步落盘。
 - **不使用** `stream=True`，保持 **单一 JSON 响应** + `response_format=json_object`。
 - `retry_policy.run_with_backoff`：`llm_judge` 的 `chat.completions.create`；`transcriber` 的 `requests` GET/POST（对 429/502–504 先 `raise_for_status` 触发重试）。
 
@@ -95,9 +97,9 @@
 
 ---
 
-*文档版本：V6.2 · 与 app.py 当前行为对齐。*
+*文档版本：V7.0 · 与 app.py 当前行为对齐。*
 
-### 架构示意（V6.2 增补链路）
+### 架构示意（V6.2 / V7.0 增补链路）
 
 ```text
 [上传原始媒体] → (app.py 体积探针) → [智能音频网关 audio_preprocess] → [transcribe_audio]

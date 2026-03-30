@@ -1,6 +1,6 @@
 """
 AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
-发版主线 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+发版主线 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 
 支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
@@ -34,6 +34,7 @@ _SRC = Path(get_resource_path("src"))
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from draft_manager import list_available_drafts, load_draft, save_draft
 from garbage_collector import sweep_stale_intermediate_json
 from runtime_paths import get_writable_app_root
 from system_debug_log import read_debug_log_bytes, setup_file_logging
@@ -169,6 +170,24 @@ def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
             st.session_state[f"{base}_ded"] = rp.get("deduction_reason", "")
         if f"{base}_ort" not in st.session_state:
             st.session_state[f"{base}_ort"] = rp.get("original_text", "")
+
+
+def _v3_snapshot_report_for_draft(stem: str) -> dict:
+    """将审查台控件值合并为可恢复的 report 字典，并保留各 risk_point 的 _rid。"""
+    draft = st.session_state.get(f"report_draft_{stem}")
+    if not draft:
+        return {}
+    built = _v3_build_report_dict_from_widgets(stem)
+    old_rps = draft.get("risk_points") or []
+    new_rps = built.get("risk_points") or []
+    for i, nr in enumerate(new_rps):
+        rid = old_rps[i].get("_rid") if i < len(old_rps) else None
+        if rid:
+            nr["_rid"] = rid
+        else:
+            nr.setdefault("_rid", uuid.uuid4().hex[:16])
+    built["risk_points"] = new_rps
+    return built
 
 
 def _v3_build_report_dict_from_widgets(stem: str) -> dict:
@@ -420,12 +439,78 @@ def _v3_render_single_stem_review(stem: str) -> None:
                 os.startfile(ph)
 
 
+def _v7_collect_draft_payload() -> dict:
+    """从当前 session_state 收集审查台快照，供本地草稿箱落盘。"""
+    stems: list[str] = st.session_state.get("v3_review_stems") or []
+    blob: dict = {
+        "version": 7,
+        "session_id": str(st.session_state.get("session_id") or ""),
+        "v3_review_stems": list(stems),
+        "reports": {},
+        "words": {},
+        "ctx": {},
+    }
+    for stem in stems:
+        try:
+            blob["reports"][stem] = _v3_snapshot_report_for_draft(stem)
+        except Exception:
+            blob["reports"][stem] = copy.deepcopy(
+                st.session_state.get(f"report_draft_{stem}") or {}
+            )
+        blob["words"][stem] = copy.deepcopy(st.session_state.get(f"words_{stem}") or [])
+        blob["ctx"][stem] = copy.deepcopy(st.session_state.get(f"v3_ctx_{stem}") or {})
+    return blob
+
+
+def _v7_apply_draft_payload(data: dict) -> None:
+    stems = data.get("v3_review_stems") or []
+    reports = data.get("reports") or {}
+    words = data.get("words") or {}
+    ctx = data.get("ctx") or {}
+    for stem in stems:
+        if stem in reports:
+            st.session_state[f"report_draft_{stem}"] = copy.deepcopy(reports[stem])
+        if stem in words:
+            st.session_state[f"words_{stem}"] = copy.deepcopy(words[stem])
+        if stem in ctx:
+            st.session_state[f"v3_ctx_{stem}"] = copy.deepcopy(ctx[stem])
+    st.session_state["v3_review_stems"] = list(stems)
+    sid = data.get("session_id")
+    if sid:
+        st.session_state["session_id"] = str(sid)
+
+
+def _v7_latest_draft_session_id() -> str | None:
+    """在可用草稿中选最近修改的一个 session_id。"""
+    ids = list_available_drafts()
+    best: str | None = None
+    best_t = -1.0
+    root = get_writable_app_root() / ".drafts"
+    for sid in ids:
+        p = root / f"draft_{sid}.json"
+        try:
+            t = p.stat().st_mtime
+        except OSError:
+            continue
+        if t > best_t:
+            best_t = t
+            best = sid
+    return best
+
+
 def _v3_render_review_workbench() -> None:
     stems: list[str] = st.session_state.get("v3_review_stems") or []
     if not stems:
         return
+    sid = str(st.session_state.get("session_id") or "").strip()
+    if sid:
+        try:
+            save_draft(sid, _v7_collect_draft_payload())
+        except Exception:
+            logging.getLogger("ai_pitch_coach.ui").exception("静默保存草稿失败")
     st.divider()
     st.subheader("🔍 报告审查与人工编辑台（V3.0）")
+    st.caption("✅ 数据已自动静默保存至本地草稿箱")
     st.caption(
         "以下为 AI 初稿；请逐条核对、编辑或删除片段，并可人工增补。"
         "仅当点击「锁定并生成最终版 HTML」后才会写入最终 HTML。"
@@ -539,7 +624,20 @@ def main() -> None:
     setup_file_logging()
     logging.getLogger("ai_pitch_coach").debug("Streamlit main() rerun")
 
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+
     with st.sidebar:
+        latest_draft_sid = _v7_latest_draft_session_id()
+        if latest_draft_sid and not st.session_state.get("v3_review_stems"):
+            st.info("检测到本地有未完成的审查草稿，可从下方恢复。")
+            if st.button("恢复上次未完成的审查草稿", key="v7_restore_draft_btn"):
+                loaded = load_draft(latest_draft_sid)
+                if loaded:
+                    _v7_apply_draft_payload(loaded)
+                    st.rerun()
+                else:
+                    st.error("草稿已损坏或不存在，无法恢复。")
         st.header("⚙️ 系统配置")
         workspace_default = str(get_writable_app_root())
         workspace = st.text_input(
@@ -756,7 +854,7 @@ def main() -> None:
     with tab_qa_file:
         st.caption(
             "参考 QA 在下方 **「逐录音填写」** 中按文件上传；仅作用于对应那一条录音。"
-            "可多选多个 QA 文件，会先合并再截断前 15000 字。支持 txt、md、pdf、docx、xlsx（PPT 请先另存为 PDF）。"
+            "可多选多个 QA 文件，会先合并再截断前 30000 字。支持 txt、md、pdf、docx、xlsx（PPT 请先另存为 PDF）。"
         )
     with tab_qa_dir:
         st.info("预留：后续支持选择本地参考文件夹批量导入。")
@@ -825,7 +923,7 @@ def main() -> None:
                 key=f"batch_qa_{idx}_{suf}",
                 help=(
                     f"仅用于本条录音「{uf.name}」。不上传仍会生成报告，但对齐深度可能下降。"
-                    "多文件会先合并再截断前 15000 字。"
+                    "多文件会先合并再截断前 30000 字。"
                 ),
             )
             batch_qa_files_per_index.append(_as_upload_list(qf))
@@ -885,7 +983,7 @@ def main() -> None:
                 return
             per_files = batch_qa_files_per_index[idx]
             batch_qa_texts.append(
-                extract_text_from_files(per_files, max_chars=15000)
+                extract_text_from_files(per_files, max_chars=30000)
             )
 
         root_path = Path(workspace).expanduser() if workspace else get_writable_app_root()
@@ -936,6 +1034,8 @@ def main() -> None:
             content_replace_map=html_mask_map if mask_html_body else None,
             show_generated_timestamp=True,
         )
+
+        st.session_state.pop("v7_qa_truncation_warn", None)
 
         for i in range(n):
             fname = recording_labels[i]
@@ -1018,10 +1118,15 @@ def main() -> None:
                         html_export_options=html_opts,
                     )
 
+                    def _pipe_status(m: str) -> None:
+                        status.update(label=m, state="running")
+                        if "QA 补充材料字数超载" in m:
+                            st.session_state["v7_qa_truncation_warn"] = m
+
                     words, report = run_pitch_file_job(
                         work_audio,
                         params,
-                        on_status=lambda m: status.update(label=m, state="running"),
+                        on_status=_pipe_status,
                         skip_html_export=True,
                     )
 
@@ -1064,6 +1169,10 @@ def main() -> None:
             logging.getLogger("garbage_collector").exception("批次结束后 GC 失败")
 
         st.session_state["v3_review_stems"] = v3_review_stems
+
+        qa_trunc_warn = st.session_state.pop("v7_qa_truncation_warn", None)
+        if qa_trunc_warn:
+            st.warning(qa_trunc_warn)
 
         if errors:
             st.warning("部分文件处理失败：")

@@ -1,4 +1,4 @@
-"""garbage_collector：仅删过期中间 JSON，不碰 HTML/音频。仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。"""
+"""garbage_collector：仅删过期中间 JSON，不碰 HTML/音频。仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。"""
 from __future__ import annotations
 
 import os

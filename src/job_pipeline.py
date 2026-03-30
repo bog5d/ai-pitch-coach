@@ -1,6 +1,6 @@
 """
 单文件复盘编排：转写 → 敏感词打码 → LLM 打分 → JSON 落盘 → HTML 报告。
-仓库发版 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+仓库发版 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 Streamlit 可在调用本流水线前对大文件做音频网关压缩，再将 `audio_path` 指向网关产物。
 HTML 内嵌音频由 report_builder 调用 imageio_ffmpeg 定位的 ffmpeg 子进程切片（Base64 MP3，
 Windows 下隐藏控制台，失败时报告中降级为文字提示）。
