@@ -43,6 +43,9 @@ Thumbs.db
 *.log
 
 # --- AI Pitch Coach Specific Ignores ---
+# V7.0 审查台本地草稿（用户机器上的断线恢复数据，勿入库）
+.drafts/
+
 # 绝对禁止上传的隐私密钥
 .env
 .env.*
