@@ -22,8 +22,11 @@
 - [x] **阶段 4：前端组装**
   - Streamlit 控制台（`app.py`）；**编排层**已抽至 `src/job_pipeline.py`（`run_pitch_file_job`），便于 CLI/自动化复用。
 - [x] **阶段 4.1：交付与合规增强（v2.x）**
-  - **主交付**：`build_release.py` BAT 纯净包（推荐）；EXE 见 `PACKAGING_EXE.md`（实验性）。
+  - **主交付**：`build_release.py` BAT 纯净包（推荐）；目录名带 `CURRENT_VERSION`（如 `AI路演教练_纯净交付版_V6.2`）；随包 **`V6.2_新功能与体验大升级.txt`** 等业务说明；EXE 见 `PACKAGING_EXE.md`（实验性）。
   - **外发 HTML**：文件名脱敏 + 可选正文同规则替换 + 页脚水印（`HtmlExportOptions`，JSON 分析件保持原文）。
+- [x] **阶段 4.2：V6.2 网关与打分（摘要）**
+  - **智能音频网关**：`audio_preprocess` + `app.py` 大文件前置压缩后再 `transcribe_audio`。
+  - **量化扣分**：`RiskPoint.score_deduction` + `llm_judge` Prompt；**定向核实**：`session_notes` / 🎯 输入框注入 CONTEXT。
 
 ## 四、 给 AI 助手 (Cursor) 的行为规范
 每次回答前，请仔细复习本文件。

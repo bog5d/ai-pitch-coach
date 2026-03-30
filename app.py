@@ -1,13 +1,23 @@
 """
-AI 路演与访谈复盘系统 — Streamlit 企业级控制台（批量归档 + 动态路径）。
+AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
+发版主线 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+
+支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
 依赖：pip install streamlit（及项目既有 transcriber / llm_judge / report_builder 依赖）
 """
 from __future__ import annotations
 
+import copy
+import hashlib
+import io
 import json
+import logging
 import os
+import subprocess
 import sys
+import threading
+import uuid
 from pathlib import Path
 
 
@@ -24,7 +34,9 @@ _SRC = Path(get_resource_path("src"))
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
+from garbage_collector import sweep_stale_intermediate_json
 from runtime_paths import get_writable_app_root
+from system_debug_log import read_debug_log_bytes, setup_file_logging
 
 _ROOT = Path(get_resource_path(".")).resolve()
 _ENV_PATH = get_writable_app_root() / ".env"
@@ -35,6 +47,8 @@ from openai import APIError, OpenAI
 
 load_dotenv(_ENV_PATH)
 
+from audio_filename_hints import guess_batch_fields_from_stem, stem_from_audio_filename
+from audio_preprocess import smart_compress_media
 from document_reader import extract_text_from_files
 from job_pipeline import (
     DEFAULT_HTML_FILENAME_MASKS,
@@ -46,12 +60,383 @@ from job_pipeline import (
     run_pitch_file_job,
     safe_fs_segment,
 )
-from report_builder import HtmlExportOptions
+from sensitive_words import parse_sensitive_words
+from report_builder import (
+    HtmlExportOptions,
+    desensitize_text,
+    generate_html_report,
+    snippet_audio_mp3_bytes,
+)
+from schema import AnalysisReport, RiskPoint, TranscriptionWord
 
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
-MODE_SINGLE = "单条（整场共用上下文）"
-MODE_BATCH = "批量（每文件单独被访谈人与备注）"
+
+def _preflight_subprocess_kwargs() -> dict:
+    """Windows 下隐藏 FFmpeg 自检子进程控制台。"""
+    kw: dict = {}
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        kw["startupinfo"] = si
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kw
+
+
+def _probe_ffmpeg_for_ui() -> tuple[bool, str]:
+    """V4.8 / V6.2 侧边栏体检：FFmpeg 路径与 -version 探针。返回 (是否就绪, 失败简述)。"""
+    try:
+        import imageio_ffmpeg
+    except ImportError as e:
+        return False, f"缺少依赖 imageio-ffmpeg：{e}"
+
+    try:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:
+        return False, f"get_ffmpeg_exe 失败：{e}"
+
+    if not ffmpeg_exe or not Path(ffmpeg_exe).is_file():
+        return False, "未获得有效 FFmpeg 可执行路径"
+
+    try:
+        r = subprocess.run(
+            [ffmpeg_exe, "-version"],
+            capture_output=True,
+            timeout=2,
+            check=False,
+            **_preflight_subprocess_kwargs(),
+        )
+    except FileNotFoundError:
+        return False, "无法启动 FFmpeg 进程（FileNotFoundError）"
+    except subprocess.TimeoutExpired:
+        return False, "FFmpeg -version 超时（>2s）"
+
+    if r.returncode != 0:
+        tail = (r.stderr or b"")[:200].decode("utf-8", errors="replace")
+        return False, tail or f"返回码 {r.returncode}"
+    return True, ""
+
+
+def _v3_clear_review_session_state() -> None:
+    """新一轮生成前清空审查台相关状态，避免旧 widget 与草稿串台。"""
+    for _k in list(st.session_state.keys()):
+        if not isinstance(_k, str):
+            continue
+        if _k.startswith(
+            ("v3", "report_draft_", "words_", "v3_ctx_", "v46_")
+        ):
+            del st.session_state[_k]
+    st.session_state["v3_review_stems"] = []
+
+
+def _v3_ensure_rid(rp: dict) -> str:
+    rid = rp.get("_rid")
+    if not rid:
+        rid = uuid.uuid4().hex[:16]
+        rp["_rid"] = rid
+    return str(rid)
+
+
+def _v3_init_header_widgets(stem: str, draft: dict) -> None:
+    sa = draft.get("scene_analysis") or {}
+    if f"v3_{stem}_scene_type" not in st.session_state:
+        st.session_state[f"v3_{stem}_scene_type"] = sa.get("scene_type", "")
+    if f"v3_{stem}_speaker_roles" not in st.session_state:
+        st.session_state[f"v3_{stem}_speaker_roles"] = sa.get("speaker_roles", "")
+    if f"v3_{stem}_total_score" not in st.session_state:
+        st.session_state[f"v3_{stem}_total_score"] = int(draft.get("total_score", 0))
+    if f"v3_{stem}_total_ded" not in st.session_state:
+        st.session_state[f"v3_{stem}_total_ded"] = draft.get(
+            "total_score_deduction_reason", ""
+        )
+
+
+def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
+    for rp in draft.get("risk_points") or []:
+        rid = _v3_ensure_rid(rp)
+        base = f"v3rp_{stem}_{rid}"
+        if f"{base}_lvl" not in st.session_state:
+            st.session_state[f"{base}_lvl"] = rp.get("risk_level", "一般")
+        if f"{base}_t1" not in st.session_state:
+            st.session_state[f"{base}_t1"] = rp.get("tier1_general_critique", "")
+        if f"{base}_t2" not in st.session_state:
+            st.session_state[f"{base}_t2"] = rp.get("tier2_qa_alignment", "")
+        if f"{base}_im" not in st.session_state:
+            st.session_state[f"{base}_im"] = rp.get("improvement_suggestion", "")
+        if f"{base}_ded" not in st.session_state:
+            st.session_state[f"{base}_ded"] = rp.get("deduction_reason", "")
+        if f"{base}_ort" not in st.session_state:
+            st.session_state[f"{base}_ort"] = rp.get("original_text", "")
+
+
+def _v3_build_report_dict_from_widgets(stem: str) -> dict:
+    draft = st.session_state[f"report_draft_{stem}"]
+    rps_out: list[dict] = []
+    for rp in draft.get("risk_points") or []:
+        rid = rp.get("_rid")
+        if not rid:
+            continue
+        base = f"v3rp_{stem}_{rid}"
+        rps_out.append(
+            {
+                "risk_level": st.session_state.get(f"{base}_lvl", rp.get("risk_level", "一般")),
+                "tier1_general_critique": st.session_state.get(
+                    f"{base}_t1", rp.get("tier1_general_critique", "")
+                ),
+                "tier2_qa_alignment": st.session_state.get(
+                    f"{base}_t2", rp.get("tier2_qa_alignment", "")
+                ),
+                "improvement_suggestion": st.session_state.get(
+                    f"{base}_im", rp.get("improvement_suggestion", "")
+                ),
+                "start_word_index": int(rp.get("start_word_index", 0)),
+                "end_word_index": int(rp.get("end_word_index", 0)),
+                "deduction_reason": st.session_state.get(
+                    f"{base}_ded", rp.get("deduction_reason", "")
+                ),
+                "original_text": st.session_state.get(
+                    f"{base}_ort", rp.get("original_text", "")
+                ),
+                "score_deduction": int(rp.get("score_deduction", 0) or 0),
+                "is_manual_entry": bool(rp.get("is_manual_entry", False)),
+            }
+        )
+    ts = st.session_state.get(f"v3_{stem}_total_score", draft.get("total_score", 0))
+    try:
+        ts_int = int(ts)
+    except (TypeError, ValueError):
+        ts_int = int(draft.get("total_score", 0))
+    ts_int = max(0, min(100, ts_int))
+    return {
+        "scene_analysis": {
+            "scene_type": st.session_state.get(
+                f"v3_{stem}_scene_type",
+                (draft.get("scene_analysis") or {}).get("scene_type", ""),
+            ),
+            "speaker_roles": st.session_state.get(
+                f"v3_{stem}_speaker_roles",
+                (draft.get("scene_analysis") or {}).get("speaker_roles", ""),
+            ),
+        },
+        "total_score": ts_int,
+        "total_score_deduction_reason": st.session_state.get(
+            f"v3_{stem}_total_ded", draft.get("total_score_deduction_reason", "")
+        ),
+        "risk_points": rps_out,
+    }
+
+
+def _v3_finalize_stem(stem: str) -> Path:
+    ctx = st.session_state[f"v3_ctx_{stem}"]
+    # 深拷贝后再校验；JSON 正文保持审查台明文，仅外发 HTML 文件名做 DLP 脱敏
+    payload = copy.deepcopy(_v3_build_report_dict_from_widgets(stem))
+    report = AnalysisReport.model_validate(payload)
+    Path(ctx["analysis_json"]).write_text(
+        json.dumps(report.model_dump(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    proj = (ctx.get("project_name") or "").strip() or "项目"
+    iv = (ctx.get("interviewee") or "").strip() or "发言人"
+    proj_d = desensitize_text(proj, is_person=False)
+    iv_d = desensitize_text(iv, is_person=True)
+    stem_part = safe_fs_segment(Path(ctx["audio_path"]).stem)
+    html_name = (
+        f"{safe_fs_segment(proj_d)}-{safe_fs_segment(iv_d)}_{stem_part}_复盘报告.html"
+    )
+    html_path = Path(ctx["audio_path"]).parent / html_name
+
+    words = [
+        TranscriptionWord.model_validate(x) for x in st.session_state[f"words_{stem}"]
+    ]
+    hopt = HtmlExportOptions(
+        footer_watermark=ctx.get("watermark") or "",
+        content_replace_map=ctx.get("html_mask_map") if ctx.get("mask_html_body") else None,
+        show_generated_timestamp=True,
+    )
+    generate_html_report(
+        Path(ctx["audio_path"]),
+        words,
+        report,
+        html_path,
+        export_options=hopt,
+    )
+    final = html_path.resolve()
+    st.session_state[f"v46_preview_html_{stem}"] = str(final)
+    return final
+
+
+def _v3_render_single_stem_review(stem: str) -> None:
+    draft = st.session_state.get(f"report_draft_{stem}")
+    if not draft:
+        st.warning("未找到该条的审查草稿。")
+        return
+    _v3_init_header_widgets(stem, draft)
+    _v3_init_risk_widgets(stem, draft)
+
+    st.markdown(f"**录音主文件名：** `{stem}`")
+
+    st.text_area(
+        "场景推断（可编辑）",
+        key=f"v3_{stem}_scene_type",
+        height=68,
+    )
+    st.text_area(
+        "身份与氛围（可编辑）",
+        key=f"v3_{stem}_speaker_roles",
+        height=68,
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.number_input(
+            "综合得分（0–100）",
+            min_value=0,
+            max_value=100,
+            key=f"v3_{stem}_total_score",
+        )
+    with c2:
+        st.caption("总分扣分说明见下方文本框。")
+    st.text_area(
+        "总分扣分说明 / 与 QA 对照",
+        key=f"v3_{stem}_total_ded",
+        height=100,
+    )
+
+    words_raw = st.session_state.get(f"words_{stem}") or []
+    words_models = [TranscriptionWord.model_validate(x) for x in words_raw]
+    audio_fs_path = Path(st.session_state[f"v3_ctx_{stem}"]["audio_path"])
+
+    st.subheader("翻车片段与逐字稿")
+    rps = st.session_state[f"report_draft_{stem}"].get("risk_points") or []
+
+    for idx, rp in enumerate(list(rps)):
+        rid = _v3_ensure_rid(rp)
+        is_manual = bool(rp.get("is_manual_entry", False))
+        with st.expander(
+            f"片段 #{idx + 1} · {'人工增补' if is_manual else 'AI 提取'} · {rid}",
+            expanded=False,
+        ):
+            st.selectbox(
+                "严重程度",
+                options=["严重", "一般", "轻微"],
+                key=f"v3rp_{stem}_{rid}_lvl",
+            )
+            st.text_area(
+                "Tier 1 · 顶尖视角",
+                key=f"v3rp_{stem}_{rid}_t1",
+                height=100,
+            )
+            st.text_area(
+                "Tier 2 · QA 对齐",
+                key=f"v3rp_{stem}_{rid}_t2",
+                height=100,
+            )
+            st.text_area(
+                "改进建议",
+                key=f"v3rp_{stem}_{rid}_im",
+                height=80,
+            )
+            st.text_area(
+                "扣分原因 / QA 口径偏离说明",
+                key=f"v3rp_{stem}_{rid}_ded",
+                height=80,
+            )
+            st.text_area(
+                "🎙️ 发言人口述实录",
+                key=f"v3rp_{stem}_{rid}_ort",
+                height=100,
+                help="模型洗稿后的口述实录，可编辑；将写入 HTML「发言人口述实录」区块。",
+            )
+
+            if not is_manual and audio_fs_path.is_file():
+                sw, ew = int(rp.get("start_word_index", 0)), int(rp.get("end_word_index", 0))
+                blob = snippet_audio_mp3_bytes(audio_fs_path, words_models, sw, ew)
+                if blob:
+                    st.audio(io.BytesIO(blob), format="audio/mpeg")
+                else:
+                    st.caption("（无法生成该片段试听，请检查词索引）")
+            elif is_manual:
+                st.caption("人工条目无词级切片与自动试听。")
+
+            if st.button(
+                "🗑️ 删除此片段",
+                key=f"v3del_{stem}_{rid}",
+            ):
+                st.session_state[f"report_draft_{stem}"]["risk_points"] = [
+                    x
+                    for x in st.session_state[f"report_draft_{stem}"]["risk_points"]
+                    if x.get("_rid") != rid
+                ]
+                st.rerun()
+
+    with st.expander("➕ 添加人工发现的复盘点", expanded=False):
+        st.text_input("标题 / Tier1 要点", key=f"v3man_{stem}_t1")
+        st.text_area("问题描述 / Tier2", key=f"v3man_{stem}_t2", height=80)
+        st.text_area("改进建议", key=f"v3man_{stem}_im", height=80)
+        if st.button("保存到本条录音审查单", key=f"v3man_{stem}_save"):
+            nt = (st.session_state.get(f"v3man_{stem}_t1") or "").strip()
+            if not nt:
+                st.error("请至少填写标题/Tier1 要点。")
+            else:
+                entry = {
+                    "risk_level": "轻微",
+                    "tier1_general_critique": nt,
+                    "tier2_qa_alignment": st.session_state.get(f"v3man_{stem}_t2", ""),
+                    "improvement_suggestion": st.session_state.get(f"v3man_{stem}_im", ""),
+                    "original_text": "",
+                    "start_word_index": 0,
+                    "end_word_index": 0,
+                    "score_deduction": 0,
+                    "deduction_reason": "人工录入",
+                    "is_manual_entry": True,
+                    "_rid": uuid.uuid4().hex[:16],
+                }
+                st.session_state[f"report_draft_{stem}"]["risk_points"].append(entry)
+                st.rerun()
+
+    if st.button(
+        "✅ 确认无误，锁定并生成最终版 HTML 报告",
+        type="primary",
+        key=f"v3finalize_{stem}",
+    ):
+        try:
+            final_html = _v3_finalize_stem(stem)
+            st.success(
+                f"已锁定：**{stem}** → JSON 与 HTML 已写入归档目录。\n"
+                f"HTML（脱敏文件名）：`{final_html.name}`"
+            )
+        except Exception as ex:
+            st.error(f"导出失败：{ex!s}")
+
+    ph = st.session_state.get(f"v46_preview_html_{stem}")
+    if ph and os.name == "nt" and Path(ph).is_file():
+        c_open1, c_open2 = st.columns(2)
+        with c_open1:
+            if st.button("📂 打开报告所在文件夹", key=f"v46dir_{stem}"):
+                os.startfile(str(Path(ph).parent))
+        with c_open2:
+            if st.button("🌐 立即预览报告", key=f"v46open_{stem}"):
+                os.startfile(ph)
+
+
+def _v3_render_review_workbench() -> None:
+    stems: list[str] = st.session_state.get("v3_review_stems") or []
+    if not stems:
+        return
+    st.divider()
+    st.subheader("🔍 报告审查与人工编辑台（V3.0）")
+    st.caption(
+        "以下为 AI 初稿；请逐条核对、编辑或删除片段，并可人工增补。"
+        "仅当点击「锁定并生成最终版 HTML」后才会写入最终 HTML。"
+    )
+    if len(stems) == 1:
+        _v3_render_single_stem_review(stems[0])
+    else:
+        tabs = st.tabs(stems)
+        for tab, stem in zip(tabs, stems):
+            with tab:
+                _v3_render_single_stem_review(stem)
 
 
 def _parse_filename_mask_lines(raw: str) -> dict[str, str]:
@@ -82,8 +467,17 @@ def _env_configured(key: str) -> bool:
     return bool(v and str(v).strip())
 
 
-def _parse_sensitive_words(raw: str) -> list[str]:
-    return [s.strip() for s in raw.split(",") if s.strip()]
+def _qa_uploader_key_suffix(audio_name: str) -> str:
+    """稳定短后缀，避免特殊字符进入 Streamlit widget key。"""
+    return hashlib.sha256((audio_name or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _as_upload_list(x: object) -> list:
+    if x is None:
+        return []
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    return [x]
 
 
 def _ping_dashscope_compatible(api_key: str) -> tuple[bool, str]:
@@ -142,6 +536,8 @@ def main() -> None:
         page_icon="🚀",
         layout="wide",
     )
+    setup_file_logging()
+    logging.getLogger("ai_pitch_coach").debug("Streamlit main() rerun")
 
     with st.sidebar:
         st.header("⚙️ 系统配置")
@@ -174,7 +570,7 @@ def main() -> None:
                 ds = (st.session_state.dash_key_field or "").strip()
                 dk = (st.session_state.deep_key_field or "").strip()
                 if not ds or not dk:
-                    st.session_state.api_dual_ok = False
+                    st.session_state.env_all_ok = False
                     st.error("❌ 请先完整填写两个 API Key。")
                 else:
                     try:
@@ -183,7 +579,7 @@ def main() -> None:
                         load_dotenv(_ENV_PATH, override=True)
                         os.environ["DASHSCOPE_API_KEY"] = ds
                         os.environ["DEEPSEEK_API_KEY"] = dk
-                        with st.status("🔌 正在连通性自检...", expanded=True) as status:
+                        with st.status("🔌 正在全量环境自检...", expanded=True) as status:
                             status.update(
                                 label="正在测试阿里云 DashScope（大模型兼容接口）...",
                                 state="running",
@@ -202,32 +598,74 @@ def main() -> None:
                                 status.write("✅ DeepSeek：绿灯")
                             else:
                                 status.write(f"❌ DeepSeek：{err_b}")
+                            status.update(
+                                label="正在检测本地视听引擎 (FFmpeg)...",
+                                state="running",
+                            )
+                            ok_ff, err_ff = _probe_ffmpeg_for_ui()
+                            if ok_ff:
+                                status.write("✅ 视听引擎 (FFmpeg)：已就绪")
+                            else:
+                                status.markdown(
+                                    ":red[❌ 视听引擎 (FFmpeg)：未找到或被拦截]"
+                                )
                             status.update(label="自检完成", state="complete")
-                        if ok_a and ok_b:
-                            st.session_state.api_dual_ok = True
-                            st.success("✅ 双路 API 已连通，可开始生成报告。")
+                        if ok_a and ok_b and ok_ff:
+                            st.session_state.env_all_ok = True
+                            st.success(
+                                "✅ 环境全绿！API与本地视听引擎均已完美就绪。"
+                            )
                         else:
-                            st.session_state.api_dual_ok = False
+                            st.session_state.env_all_ok = False
                             parts: list[str] = []
                             if not ok_a:
                                 parts.append(f"阿里云：{err_a}")
                             if not ok_b:
                                 parts.append(f"DeepSeek：{err_b}")
-                            st.error("❌ 连通性未通过：" + "；".join(parts))
+                            if not ok_ff:
+                                parts.append(f"FFmpeg：{err_ff}")
+                            st.error("❌ 环境自检未通过：" + "；".join(parts))
                     except Exception as e:
-                        st.session_state.api_dual_ok = False
+                        st.session_state.env_all_ok = False
                         st.error(f"❌ 保存或测试失败：{e!s}")
 
-        if st.session_state.get("api_dual_ok"):
-            st.success("✅ API：双路已验证")
+        if st.session_state.get("env_all_ok"):
+            st.success("✅ 环境：API + FFmpeg 已验证")
         else:
-            st.caption("⚠️ 须「保存并测试连接」全部绿灯后方可生成报告。")
+            st.caption(
+                "⚠️ 须点击「保存并测试连接」直至阿里云、DeepSeek、FFmpeg 全部通过后方可生成报告。"
+            )
 
-        sensitive_words_input = st.text_area(
-            "🔒 敏感词汇黑名单 (逗号分隔)",
-            value="福创投, 迪策, 净利润",
-            help="在调用大模型前，对转写词文本做替换为 ***。",
+        if "sensitive_words_raw" not in st.session_state:
+            st.session_state.sensitive_words_raw = "福创投, 迪策, 净利润"
+        st.text_area(
+            "🔒 保密词汇黑名单（支持换行、空格、中英文逗号/分号混用）",
+            key="sensitive_words_raw",
+            height=88,
+            help="在调用大模型前，对转写词文本替换为 ***。可点击「识别保密词汇」预览系统解析结果。",
         )
+        if st.button("🔍 识别保密词汇", key="btn_parse_sensitive_words"):
+            parsed = parse_sensitive_words(
+                str(st.session_state.get("sensitive_words_raw") or "")
+            )
+            st.session_state.sensitive_words_last_parsed = parsed
+        last_p = st.session_state.get("sensitive_words_last_parsed")
+        if last_p is not None:
+            if last_p:
+                show_n = 24
+                if len(last_p) <= show_n:
+                    joined = "，".join(last_p)
+                    st.caption(
+                        f"已成功识别并提取 {len(last_p)} 个保密词汇：{joined}"
+                    )
+                else:
+                    joined = "，".join(last_p[:show_n])
+                    st.caption(
+                        f"已成功识别并提取 {len(last_p)} 个保密词汇：{joined}…"
+                        f"（此处仅展示前 {show_n} 个）"
+                    )
+            else:
+                st.caption("已成功识别：当前列表为空（未提取到任何非空词汇）。")
 
         filename_mask_input = st.text_area(
             "📤 外发 HTML 文件名脱敏（每行：原名⇒代号）",
@@ -261,12 +699,30 @@ def main() -> None:
             f"{'✅' if _env_configured('DEEPSEEK_API_KEY') else '❌'} DEEPSEEK_API_KEY（DeepSeek）"
         )
 
+    if not st.session_state.get("v4_startup_gc_started"):
+        st.session_state["v4_startup_gc_started"] = True
+        ws_gc = (workspace or "").strip() or str(get_writable_app_root())
+
+        def _startup_gc() -> None:
+            try:
+                n = sweep_stale_intermediate_json(ws_gc)
+                if n:
+                    logging.getLogger("garbage_collector").info(
+                        "启动静默 GC：已删除 %d 个过期中间 JSON（根：%s）",
+                        n,
+                        ws_gc,
+                    )
+            except Exception:
+                logging.getLogger("garbage_collector").exception("启动 GC 失败")
+
+        threading.Thread(target=_startup_gc, daemon=True).start()
+
     st.title("🚀 AI 路演与访谈复盘系统")
 
-    if not st.session_state.get("api_dual_ok", False):
+    if not st.session_state.get("env_all_ok", False):
         st.warning(
             "⚠️ 请先在左侧侧边栏「🔑 首次使用请配置 API 密钥」中填写 Key，"
-            "点击「💾 保存并测试连接」直至双路绿灯后，方可开始生成报告。"
+            "点击「💾 保存并测试连接」直至阿里云、DeepSeek 与 FFmpeg 全绿后，方可开始生成报告。"
         )
 
     scene_options = [_SCENE_SELECT_PLACEHOLDER] + list(SCENE_MAP.keys())
@@ -285,31 +741,9 @@ def main() -> None:
             help="将作为子文件夹名称的一部分，并进入 AI 上下文。",
         )
 
-    process_mode = st.radio(
-        "处理模式",
-        options=[MODE_SINGLE, MODE_BATCH],
-        index=0,
-        horizontal=True,
-        help=(
-            "单条：整场共用一名被访谈人，适合一场录音或多人同语境。"
-            "批量：每个上传文件单独填写被访谈人与备注，适合一人一段录音。"
-        ),
-        key="process_mode_radio",
+    st.caption(
+        "上传音频（可 1 条或多条）后，在下方按 **每一条录音** 填写被访谈人、备注，并可选上传该段对应的参考 QA。"
     )
-
-    interviewee = ""
-    if process_mode == MODE_SINGLE:
-        interviewee = st.text_input(
-            "被访谈人（必填）",
-            placeholder="例如：高管姓名或对内代号",
-            help="本场录音对应的被访谈对象，写入 AI 上下文。",
-            key="interviewee_single",
-        )
-    else:
-        st.caption(
-            "批量模式：上传音频后，在下方「逐文件信息」中为 **每个文件** 填写被访谈人（必填）与备注（可选），"
-            "将分别写入该段转写的 AI 上下文。"
-        )
 
     if category == OTHER_SCENE_KEY:
         st.text_input(
@@ -318,17 +752,11 @@ def main() -> None:
             key="custom_roles_other",
         )
 
-    tab_qa_file, tab_qa_dir = st.tabs(["上传QA文件", "选择参考文件夹"])
+    tab_qa_file, tab_qa_dir = st.tabs(["参考 QA 说明", "选择参考文件夹"])
     with tab_qa_file:
-        qa_upload = st.file_uploader(
-            "上传参考 QA（可多选）",
-            type=["txt", "md", "pdf", "docx", "xlsx"],
-            accept_multiple_files=True,
-            key="qa_file_upload",
-            help=(
-                "支持 txt、md、pdf、docx、xlsx。为保证系统稳定，暂不支持 PPT；"
-                "若为 PPT 请另存为 PDF 后上传。最大读取前 15000 字。"
-            ),
+        st.caption(
+            "参考 QA 在下方 **「逐录音填写」** 中按文件上传；仅作用于对应那一条录音。"
+            "可多选多个 QA 文件，会先合并再截断前 15000 字。支持 txt、md、pdf、docx、xlsx（PPT 请先另存为 PDF）。"
         )
     with tab_qa_dir:
         st.info("预留：后续支持选择本地参考文件夹批量导入。")
@@ -348,9 +776,31 @@ def main() -> None:
     if uploaded is not None:
         uploaded_list = list(uploaded) if isinstance(uploaded, (list, tuple)) else [uploaded]
 
-    if process_mode == MODE_BATCH and uploaded_list:
-        st.subheader("逐文件信息（进入 AI 上下文）")
+    batch_qa_files_per_index: list[list] = []
+    if uploaded_list:
+        st.subheader("逐录音填写（进入 AI 上下文）")
+        st.checkbox(
+            "根据录音文件名自动填写被访谈人与备注",
+            value=True,
+            key="batch_autofill_filename",
+            help=(
+                "按常见命名「机构-姓名」与可选末尾 8 位日期解析；更换本行对应录音文件名后会按新文件名重新覆盖这两项。"
+                "关闭后仅手动填写。"
+            ),
+        )
+        st.caption(
+            "调整音频顺序或增删文件后，请逐条核对被访谈人、备注与 QA 是否与录音一致。"
+        )
         for idx, uf in enumerate(uploaded_list):
+            stem = stem_from_audio_filename(uf.name)
+            track_key = f"_batch_audio_stem_{idx}"
+            if st.session_state.get("batch_autofill_filename", True):
+                if st.session_state.get(track_key) != stem:
+                    st.session_state[track_key] = stem
+                    iv_guess, note_guess = guess_batch_fields_from_stem(stem)
+                    st.session_state[f"batch_iv_{idx}"] = iv_guess
+                    st.session_state[f"batch_note_{idx}"] = note_guess
+
             st.markdown(f"**文件 {idx + 1}：** `{uf.name}`")
             c_iv, c_note = st.columns(2)
             with c_iv:
@@ -362,25 +812,39 @@ def main() -> None:
                 )
             with c_note:
                 st.text_input(
-                    "本段备注（可选）",
+                    "🎯 重点关注与定向核实（可选）",
                     key=f"batch_note_{idx}",
-                    placeholder="角色、场次、关注点等",
-                    help="写入 AI 上下文本段补充说明。",
+                    placeholder="例如：X总提到A口径，请重点核实是否与外部B口径一致并截取音频",
+                    help="写入 AI 上下文本段，作为定向核实与重点关注指令注入 Prompt。",
                 )
+            suf = _qa_uploader_key_suffix(uf.name)
+            qf = st.file_uploader(
+                "本段参考 QA（可选，可多选）",
+                type=["txt", "md", "pdf", "docx", "xlsx"],
+                accept_multiple_files=True,
+                key=f"batch_qa_{idx}_{suf}",
+                help=(
+                    f"仅用于本条录音「{uf.name}」。不上传仍会生成报告，但对齐深度可能下降。"
+                    "多文件会先合并再截断前 15000 字。"
+                ),
+            )
+            batch_qa_files_per_index.append(_as_upload_list(qf))
 
     st.info(
-        "💡 **建议**：开始生成前，在上方「上传QA文件」中上传 **内部 QA 口径**、**访谈纪要** 或 **对客口径 PDF/Word**，"
-        "便于 AI 对照标准找茬；未上传时仍会生成报告，但对齐深度可能下降。"
+        "💡 **建议**：尽量为每条录音上传 **对应该方向的 QA** 或口径材料；未上传时仍会生成报告。"
     )
 
     run = st.button(
-        "开始生成批量复盘报告",
+        "开始生成复盘报告",
         type="primary",
-        disabled=not st.session_state.get("api_dual_ok", False),
+        disabled=not st.session_state.get("env_all_ok", False),
     )
 
     if not run:
         st.info("配置侧边栏与业务场景，上传音频后点击按钮开始。")
+        if st.session_state.get("v3_review_stems"):
+            st.divider()
+            _v3_render_review_workbench()
         return
 
     if not uploaded_list:
@@ -395,20 +859,11 @@ def main() -> None:
         st.error("请填写「项目/批次名称」（必填）。")
         return
 
-    if process_mode == MODE_SINGLE:
-        iv_single = (st.session_state.get("interviewee_single") or "").strip()
-        if not iv_single:
-            st.error("单条模式下请填写「被访谈人」（必填）。")
+    for idx in range(len(uploaded_list)):
+        iv = (st.session_state.get(f"batch_iv_{idx}") or "").strip()
+        if not iv:
+            st.error(f"请为录音「{uploaded_list[idx].name}」填写被访谈人（必填）。")
             return
-        interviewee = iv_single
-    else:
-        for idx in range(len(uploaded_list)):
-            iv = (st.session_state.get(f"batch_iv_{idx}") or "").strip()
-            if not iv:
-                st.error(
-                    f"批量模式下请为文件「{uploaded_list[idx].name}」填写被访谈人（必填）。"
-                )
-                return
 
     if category == OTHER_SCENE_KEY:
         cr = (st.session_state.get("custom_roles_other") or "").strip()
@@ -416,127 +871,226 @@ def main() -> None:
             st.error('业务大类为「05_其他」时，必须填写「具体双方身份」。')
             return
 
-    sensitive_words = _parse_sensitive_words(sensitive_words_input)
-    html_mask_map = _merge_html_filename_masks(filename_mask_input)
-    project_name = (batch_name or "").strip()
-
-    qa_files_list: list = []
-    if qa_upload is not None:
-        qa_files_list = list(qa_upload) if isinstance(qa_upload, (list, tuple)) else [qa_upload]
-    qa_text = extract_text_from_files(qa_files_list, max_chars=15000)
-
-    root_path = Path(workspace).expanduser() if workspace else get_writable_app_root()
     try:
-        root_path.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        st.error(f"无法创建或使用归档根目录：{e}")
-        return
+        sensitive_words = parse_sensitive_words(
+            str(st.session_state.get("sensitive_words_raw") or "")
+        )
+        html_mask_map = _merge_html_filename_masks(filename_mask_input)
+        project_name = (batch_name or "").strip()
 
-    target_dir = root_path / safe_fs_segment(category) / safe_fs_segment(batch_name)
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        st.error(f"无法创建目标目录：{target_dir}\n{e}")
-        return
+        batch_qa_texts: list[str] = []
+        for idx, uf in enumerate(uploaded_list):
+            if idx >= len(batch_qa_files_per_index):
+                st.error("内部状态异常：请刷新页面后重新上传音频。")
+                return
+            per_files = batch_qa_files_per_index[idx]
+            batch_qa_texts.append(
+                extract_text_from_files(per_files, max_chars=15000)
+            )
 
-    progress_bar = st.progress(0)
-    errors: list[str] = []
-
-    custom_roles = (
-        (st.session_state.get("custom_roles_other") or "").strip()
-        if category == OTHER_SCENE_KEY
-        else ""
-    )
-
-    html_opts = HtmlExportOptions(
-        footer_watermark=(html_watermark or "").strip(),
-        content_replace_map=html_mask_map if mask_html_body else None,
-        show_generated_timestamp=True,
-    )
-
-    n = len(uploaded_list)
-    for i, uf in enumerate(uploaded_list):
-        fname = uf.name
-        stem = Path(fname).stem
-
-        audio_path = target_dir / fname
+        root_path = Path(workspace).expanduser() if workspace else get_writable_app_root()
         try:
-            audio_path.write_bytes(uf.getvalue())
+            root_path.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            errors.append(f"{fname}: 保存文件失败 {e}")
-            progress_bar.progress((i + 1) / n)
-            continue
+            st.error(f"无法创建或使用归档根目录：{e}")
+            return
 
+        target_dir = root_path / safe_fs_segment(category) / safe_fs_segment(batch_name)
         try:
-            with st.status(
-                "🚀 正在启动自动化处理流水线...",
-                expanded=True,
-            ) as status:
-                status.update(
-                    label=f"🎧 正在竖起耳朵听 {uf.name} (音频转写中，请耐心喝口水)...",
-                    state="running",
-                )
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            st.error(f"无法创建目标目录：{target_dir}\n{e}")
+            return
 
-                if process_mode == MODE_SINGLE:
-                    per_iv = (interviewee or "").strip()
-                    per_note = ""
-                else:
+        _v3_clear_review_session_state()
+
+        errors: list[str] = []
+        n = len(uploaded_list)
+        v3_review_stems: list[str] = []
+        # 先固化展示名（与 session_state 下标对齐），再极速落盘，避免长耗时后 UploadedFile 缓存失效导致 WinError 2
+        recording_labels: list[str] = [
+            getattr(uf, "name", "") or f"recording_{i}" for i, uf in enumerate(uploaded_list)
+        ]
+        saved_audio_paths: list[Path | None] = [None] * n
+        for i, uf in enumerate(uploaded_list):
+            fname = recording_labels[i]
+            audio_path = target_dir / fname
+            try:
+                audio_path.write_bytes(uf.getvalue())
+                saved_audio_paths[i] = audio_path.resolve()
+            except OSError as e:
+                errors.append(f"{fname}: 抢救落盘失败（无法写入归档目录）{e}")
+            except Exception as e:
+                errors.append(f"{fname}: 抢救落盘失败 {e!s}")
+
+        progress_bar = st.progress(0)
+
+        custom_roles = (
+            (st.session_state.get("custom_roles_other") or "").strip()
+            if category == OTHER_SCENE_KEY
+            else ""
+        )
+
+        html_opts = HtmlExportOptions(
+            footer_watermark=(html_watermark or "").strip(),
+            content_replace_map=html_mask_map if mask_html_body else None,
+            show_generated_timestamp=True,
+        )
+
+        for i in range(n):
+            fname = recording_labels[i]
+            stem = Path(fname).stem
+            audio_path = saved_audio_paths[i]
+
+            if audio_path is None:
+                progress_bar.progress((i + 1) / n)
+                continue
+
+            try:
+                with st.status(
+                    "🚀 正在执行 AI 深度复盘...",
+                    expanded=True,
+                ) as status:
+                    raw_bytes = audio_path.read_bytes()
+                    orig_len = len(raw_bytes)
+                    orig_size_mb = orig_len / (1024 * 1024)
+                    status.write(
+                        f"📥 接收原始文件：大小 {orig_size_mb:.2f} MB"
+                    )
+                    if orig_len < 10 * 1024 * 1024:
+                        status.write("✅ 文件极轻量，免压缩直通 ASR。")
+                        work_audio = audio_path
+                    else:
+                        status.write(
+                            "⚙️ 启动智能音频网关 (抽离视频轨 & 语音降采样)..."
+                        )
+                        cres = smart_compress_media(
+                            raw_bytes, filename_hint=fname
+                        )
+                        if cres.did_compress:
+                            new_size_mb = len(cres.data) / (1024 * 1024)
+                            ratio = (1.0 - len(cres.data) / max(1, orig_len)) * 100.0
+                            st.success(
+                                f"🚀 极致压缩完成！新大小：{new_size_mb:.2f} MB "
+                                f"(体积缩减 {ratio:.1f}%)"
+                            )
+                            gw = target_dir / f"{stem}_v62_asr_gateway.mp3"
+                            gw.write_bytes(cres.data)
+                            work_audio = gw.resolve()
+                        else:
+                            st.warning(
+                                "⚠️ 压缩遇到特殊格式，已安全回退至原文件处理。"
+                            )
+                            work_audio = audio_path
+
+                    status.write(
+                        "里程碑：云端转写 → 敏感词脱敏 → DeepSeek 多维度 QA 对齐（结构化 JSON）→ 初稿进入审查台。"
+                    )
+
                     per_iv = (st.session_state.get(f"batch_iv_{i}") or "").strip()
                     per_note = (st.session_state.get(f"batch_note_{i}") or "").strip()
 
-                explicit_context = build_explicit_context(
-                    category,
-                    project_name,
-                    per_iv,
-                    session_notes=per_note,
-                    recording_label=uf.name,
-                    custom_roles_other=custom_roles,
+                    explicit_context = build_explicit_context(
+                        category,
+                        project_name,
+                        per_iv,
+                        session_notes=per_note,
+                        recording_label=fname,
+                        custom_roles_other=custom_roles,
+                    )
+
+                    trans_json = target_dir / f"{stem}_transcription.json"
+                    analysis_json = target_dir / f"{stem}_analysis_report.json"
+                    html_stem = apply_html_filename_masks(stem, html_mask_map)
+                    html_name = f"{html_stem}_复盘报告.html"
+                    html_path = target_dir / html_name
+
+                    qa_text = batch_qa_texts[i]
+
+                    params = PitchFileJobParams(
+                        transcription_json_path=trans_json,
+                        analysis_json_path=analysis_json,
+                        html_output_path=html_path,
+                        sensitive_words=sensitive_words,
+                        explicit_context=explicit_context,
+                        qa_text=qa_text,
+                        model_choice="deepseek",
+                        html_export_options=html_opts,
+                    )
+
+                    words, report = run_pitch_file_job(
+                        work_audio,
+                        params,
+                        on_status=lambda m: status.update(label=m, state="running"),
+                        skip_html_export=True,
+                    )
+
+                    draft = report.model_dump()
+                    for _rp in draft.get("risk_points") or []:
+                        _rp.setdefault("_rid", uuid.uuid4().hex[:16])
+
+                    st.session_state[f"report_draft_{stem}"] = draft
+                    st.session_state[f"words_{stem}"] = [w.model_dump() for w in words]
+                    st.session_state[f"v3_ctx_{stem}"] = {
+                        "audio_path": str(work_audio),
+                        "analysis_json": str(analysis_json),
+                        "html_path": str(html_path),
+                        "project_name": project_name,
+                        "interviewee": per_iv,
+                        "watermark": (html_watermark or "").strip(),
+                        "mask_html_body": bool(mask_html_body),
+                        "html_mask_map": dict(html_mask_map),
+                    }
+                    v3_review_stems.append(stem)
+
+                    status.update(
+                        label=f"✅ {fname} AI 初稿已就绪，请在下方审查台锁定后导出 HTML",
+                        state="complete",
+                    )
+            except Exception as e:
+                errors.append(f"{fname}: {e!s}")
+
+            progress_bar.progress((i + 1) / n)
+
+        progress_bar.progress(1.0)
+
+        try:
+            n_gc = sweep_stale_intermediate_json(root_path)
+            if n_gc:
+                logging.getLogger("garbage_collector").info(
+                    "批次结束后 GC：已删除 %d 个过期中间 JSON", n_gc
                 )
+        except Exception:
+            logging.getLogger("garbage_collector").exception("批次结束后 GC 失败")
 
-                trans_json = target_dir / f"{stem}_transcription.json"
-                analysis_json = target_dir / f"{stem}_analysis_report.json"
-                html_stem = apply_html_filename_masks(stem, html_mask_map)
-                html_name = f"{html_stem}_复盘报告.html"
-                html_path = target_dir / html_name
+        st.session_state["v3_review_stems"] = v3_review_stems
 
-                params = PitchFileJobParams(
-                    transcription_json_path=trans_json,
-                    analysis_json_path=analysis_json,
-                    html_output_path=html_path,
-                    sensitive_words=sensitive_words,
-                    explicit_context=explicit_context,
-                    qa_text=qa_text,
-                    model_choice="deepseek",
-                    html_export_options=html_opts,
-                )
+        if errors:
+            st.warning("部分文件处理失败：")
+            for e in errors:
+                st.error(e)
 
-                run_pitch_file_job(
-                    audio_path,
-                    params,
-                    on_status=lambda m: status.update(label=m, state="running"),
-                )
+        if len(errors) < n:
+            st.balloons()
+            st.success(
+                f"✅ AI 初稿与转写已归档至：**{target_dir}**（JSON 已写；"
+                f"**最终 HTML 需在下方审查台锁定后生成**）"
+            )
+            _v3_render_review_workbench()
+        else:
+            st.error("全部任务失败，请检查上方错误与 API 配置。")
 
-                status.update(
-                    label=f"✅ {uf.name} 报告新鲜出炉！",
-                    state="complete",
-                )
-        except Exception as e:
-            errors.append(f"{fname}: {e!s}")
-
-        progress_bar.progress((i + 1) / n)
-
-    progress_bar.progress(1.0)
-
-    if errors:
-        st.warning("部分文件处理失败：")
-        for e in errors:
-            st.error(e)
-
-    if len(errors) < n:
-        st.balloons()
-        st.success(f"✅ 所有报告已生成并归档至：**{target_dir}**")
-    else:
-        st.error("全部任务失败，请检查上方错误与 API 配置。")
+    except Exception as e:
+        logging.getLogger("ai_pitch_coach.ui").exception("主流程未捕获异常")
+        st.error(f"系统在处理过程中发生意外错误，已记录到诊断日志：{e!s}")
+        st.caption("若需技术支持，请下载下方 `debug.log` 并附上复现步骤。")
+        st.download_button(
+            label="🆘 下载系统诊断日志",
+            data=read_debug_log_bytes(),
+            file_name="debug.log",
+            mime="text/plain",
+            key="v4_fatal_debug_log_download",
+        )
 
 
 if __name__ == "__main__":

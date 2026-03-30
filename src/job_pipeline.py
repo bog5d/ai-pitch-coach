@@ -1,10 +1,15 @@
 """
 单文件复盘编排：转写 → 敏感词打码 → LLM 打分 → JSON 落盘 → HTML 报告。
+仓库发版 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+Streamlit 可在调用本流水线前对大文件做音频网关压缩，再将 `audio_path` 指向网关产物。
+HTML 内嵌音频由 report_builder 调用 imageio_ffmpeg 定位的 ffmpeg 子进程切片（Base64 MP3，
+Windows 下隐藏控制台，失败时报告中降级为文字提示）。
 供 Streamlit、CLI、自动化脚本共用；不含任何 UI 依赖。
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,8 +17,10 @@ from pathlib import Path
 
 from llm_judge import evaluate_pitch
 from report_builder import HtmlExportOptions, generate_html_report
-from schema import TranscriptionWord
+from schema import AnalysisReport, TranscriptionWord
 from transcriber import transcribe_audio
+
+logger = logging.getLogger(__name__)
 
 # 业务场景与默认双方角色（与 app 侧边栏一致）
 SCENE_MAP: dict[str, str] = {
@@ -79,11 +86,16 @@ def mask_words_for_llm(
 ) -> list[TranscriptionWord]:
     if not sensitive_words:
         return words
+    kws = [str(kw).strip() for kw in sensitive_words if kw and str(kw).strip()]
+    if not kws:
+        return words
+    # 长词优先，避免「华为」先替换导致「华为云」无法整词匹配
+    kws = sorted(set(kws), key=len, reverse=True)
     out: list[TranscriptionWord] = []
     for w in words:
         t = w.text
-        for kw in sensitive_words:
-            if kw and kw in t:
+        for kw in kws:
+            if kw in t:
                 t = t.replace(kw, "***")
         if t != w.text:
             out.append(w.model_copy(update={"text": t}))
@@ -109,39 +121,50 @@ def run_pitch_file_job(
     params: PitchFileJobParams,
     *,
     on_status: Callable[[str], None] | None = None,
-) -> None:
+    skip_html_export: bool = False,
+) -> tuple[list[TranscriptionWord], AnalysisReport]:
     """
     执行单条音频的完整流水线。失败时抛出异常，由调用方（如 Streamlit）捕获汇总。
     on_status 可选，用于 Streamlit st.status.update(label=...) 等 UI 进度。
+    skip_html_export=True 时仅写 analysis JSON（初稿），不生成 HTML，供 V3 审查台人工确认后再导出。
+    返回 (原始词级转写列表, AnalysisReport)（与送 LLM 的脱敏稿不同，HTML 与落盘 JSON 使用未脱敏 words）。
     """
     def _line(msg: str) -> None:
+        logger.info("pipeline: %s", msg)
         if on_status:
             on_status(msg)
 
-    _line(
-        f"🎧 正在竖起耳朵听 {audio_path.name} (音频转写中，请耐心喝口水)..."
-    )
+    _line(f"⏱️ 正在提取音频特征：{audio_path.name}（耗时可能较长，请耐心等待）…")
     words = transcribe_audio(audio_path, out_json_path=params.transcription_json_path)
+    char_est = sum(len(w.text or "") for w in words)
     _line(
-        f"🕵️ 听写完毕！共抓取 {len(words)} 个词汇。正在执行商业机密脱敏打码..."
+        f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。正在执行商业机密脱敏打码…"
     )
     words_for_llm = mask_words_for_llm(words, params.sensitive_words)
-    _line("🧠 正在请出顶级 VC 大脑，戴上老花镜逐字找茬中 (最耗时的一步，让子弹飞一会儿)...")
+    _line(
+        f"⏱️ {params.model_choice} 正在进行多维度 QA 对齐与痛点审查（结构化 JSON，最耗时一步）…"
+    )
     report = evaluate_pitch(
         words_for_llm,
         model_choice=params.model_choice,
         explicit_context=params.explicit_context,
         qa_text=params.qa_text,
+        on_notice=_line,
     )
-    _line("✂️ 找茬完毕！正在疯狂裁剪原声音频，为您装订绝美复盘报告...")
+    if skip_html_export:
+        _line("✂️ AI 初稿已生成，等待人工审查台确认后再导出 HTML...")
+    else:
+        _line("✂️ 找茬完毕！正在疯狂裁剪原声音频，为您装订绝美复盘报告...")
     params.analysis_json_path.write_text(
         json.dumps(report.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    generate_html_report(
-        audio_path,
-        words,
-        report,
-        params.html_output_path,
-        export_options=params.html_export_options,
-    )
+    if not skip_html_export:
+        generate_html_report(
+            audio_path,
+            words,
+            report,
+            params.html_output_path,
+            export_options=params.html_export_options,
+        )
+    return words, report

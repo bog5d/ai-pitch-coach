@@ -1,15 +1,19 @@
-# 依赖：pip install pydub jinja2 pydantic imageio-ffmpeg
-# 说明：优先通过 imageio-ffmpeg 注入 ffmpeg 目录到 PATH，避免 Windows 未单独安装 ffmpeg。
+# 依赖：pip install jinja2 pydantic imageio-ffmpeg pypinyin（切片：ffmpeg 子进程，无 pydub）
+# 说明：ffmpeg 路径仅来自 imageio_ffmpeg.get_ffmpeg_exe()，不依赖系统 PATH。
 """
 终极报告拼装：真实 m4a + 词级时间戳 + AnalysisReport → 单文件 Base64 内嵌 MP3 的 HTML。
+仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 
 import base64
-import io
 import json
+import logging
 import os
+import re
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,16 +21,67 @@ from typing import Dict, List
 
 try:
     import imageio_ffmpeg
-
-    os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
 except ImportError:
-    pass
+    imageio_ffmpeg = None  # type: ignore[assignment]
+
+try:
+    from pypinyin import Style, lazy_pinyin
+except ImportError:
+    lazy_pinyin = None  # type: ignore[assignment]
+    Style = None  # type: ignore[assignment]
 
 from jinja2 import Environment, select_autoescape
 from pydantic import ValidationError
-from pydub import AudioSegment
 
 from schema import AnalysisReport, RiskPoint, SceneAnalysis, TranscriptionWord
+from runtime_paths import get_project_root, get_writable_app_root
+
+logger = logging.getLogger(__name__)
+
+# 机构名常见后缀：先匹配长串，前缀取汉字拼音首字母大写后与后缀拼接（如 迪策资本 → DC资本）
+_ORG_SUFFIXES: tuple[str, ...] = (
+    "股份有限公司",
+    "有限责任公司",
+    "有限公司",
+    "资本",
+    "基金",
+    "投资",
+)
+
+
+def _han_initials_segment(s: str) -> str:
+    """将连续汉字转为拼音首字母大写；非汉字原样保留。"""
+    if lazy_pinyin is None or Style is None:
+        return re.sub(r"[\u4e00-\u9fff]", "*", s)
+    parts: list[str] = []
+    for ch in s:
+        if "\u4e00" <= ch <= "\u9fff":
+            py = lazy_pinyin(ch, style=Style.FIRST_LETTER)
+            if py and py[0]:
+                parts.append(str(py[0]).upper())
+        else:
+            parts.append(ch)
+    return "".join(parts)
+
+
+def desensitize_text(text: str, *, is_person: bool = False) -> str:
+    """
+    企业级 DLP 轻量脱敏（依赖 pypinyin）。
+    - is_person=True：人名统一为 XXX。
+    - is_person=False：机构/混合字符串——常见组织后缀前的汉字取首字母，后缀保留。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return "未命名"
+    if is_person:
+        return "XXX"
+    for suf in sorted(_ORG_SUFFIXES, key=len, reverse=True):
+        if raw.endswith(suf) and len(raw) > len(suf):
+            prefix = raw[: -len(suf)]
+            body = _han_initials_segment(prefix)
+            return (body + suf) if body.strip() else suf
+    out = _han_initials_segment(raw)
+    return out if out.strip() else "机构"
 
 
 @dataclass
@@ -69,16 +124,23 @@ def _report_for_html_display(
                 tier1_general_critique=_apply_text_masks(rp.tier1_general_critique, masks),
                 tier2_qa_alignment=_apply_text_masks(rp.tier2_qa_alignment, masks),
                 improvement_suggestion=_apply_text_masks(rp.improvement_suggestion, masks),
+                original_text=_apply_text_masks(rp.original_text, masks),
                 start_word_index=rp.start_word_index,
                 end_word_index=rp.end_word_index,
+                score_deduction=rp.score_deduction,
+                deduction_reason=_apply_text_masks(rp.deduction_reason, masks),
+                is_manual_entry=rp.is_manual_entry,
             )
         )
     return AnalysisReport(
         scene_analysis=scene,
         total_score=report.total_score,
+        total_score_deduction_reason=_apply_text_masks(
+            report.total_score_deduction_reason, masks
+        ),
         risk_points=new_risks,
     )
-from runtime_paths import get_project_root, get_writable_app_root
+
 
 # ---------------------------------------------------------------------------
 _PROJ = get_project_root()
@@ -87,6 +149,8 @@ _WRITABLE = get_writable_app_root()
 # 非对称缓冲：开头短切以贴近提问，结尾略长以保留答句余韵
 PAD_START_SEC = 1.5
 PAD_END_SEC = 8.0
+# 单段内嵌 Base64 MP3 物理上限（秒），防止异常大索引撑爆 HTML
+PHYSICAL_MAX_DURATION = 180.0
 
 TRANSCRIPTION_JSON = _WRITABLE / "output" / "real_transcription.json"
 ANALYSIS_JSON = _WRITABLE / "output" / "real_analysis_report.json"
@@ -94,34 +158,190 @@ AUDIO_PATH = _PROJ / "tests" / "real_pitch.m4a"
 OUTPUT_HTML = _WRITABLE / "output" / "final_pitch_report.html"
 
 
-def slice_audio_to_base64(
-    audio_segment: AudioSegment,
+def _get_ffmpeg_exe() -> str | None:
+    if imageio_ffmpeg is None:
+        return None
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _get_ffprobe_exe() -> str | None:
+    ff = _get_ffmpeg_exe()
+    if not ff:
+        return None
+    p = Path(ff)
+    parent = p.parent
+    name = p.name.lower()
+    if name == "ffmpeg.exe":
+        probe = parent / "ffprobe.exe"
+    elif name == "ffmpeg":
+        probe = parent / "ffprobe"
+    else:
+        probe = parent / str(p.name).replace("ffmpeg", "ffprobe")
+    if probe.is_file():
+        return str(probe)
+    return None
+
+
+def _subprocess_stealth_kwargs() -> dict:
+    """Windows：隐藏控制台窗口，降低杀软/用户心理干扰。"""
+    kw: dict = {}
+    if os.name == "nt":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        kw["startupinfo"] = si
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return kw
+
+
+def _ffprobe_duration_sec(audio_path: Path) -> float | None:
+    exe = _get_ffprobe_exe()
+    if not exe or not audio_path.is_file():
+        return None
+    cmd = [
+        exe,
+        "-hide_banner",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(audio_path.resolve()),
+    ]
+    try:
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            **_subprocess_stealth_kwargs(),
+        )
+        if r.returncode != 0 or not (r.stdout or "").strip():
+            return None
+        return max(0.0, float((r.stdout or "").strip()))
+    except Exception as e:
+        logger.warning("ffprobe failed for %s: %s", audio_path, e)
+        return None
+
+
+def _padded_window_sec(
+    start_word_t: float,
+    end_word_t: float,
+    media_duration: float | None,
+) -> tuple[float, float]:
+    """返回 (ss, duration) 供 ffmpeg -ss / -t 使用。"""
+    t0 = max(0.0, float(start_word_t) - PAD_START_SEC)
+    t1 = float(end_word_t) + PAD_END_SEC
+    if media_duration is not None and media_duration > 0:
+        t1 = min(t1, media_duration)
+    dur = t1 - t0
+    if dur <= 0:
+        t1 = min((media_duration or t0 + 1.0), t0 + 0.35)
+        dur = max(0.05, t1 - t0)
+    elif dur > PHYSICAL_MAX_DURATION:
+        logger.warning(
+            "[Safety Guard] 检测到超长索引（%.2fs），已物理截断至 180s 极限以保护报告体积。",
+            dur,
+        )
+        dur = PHYSICAL_MAX_DURATION
+    return t0, dur
+
+
+def _ffmpeg_slice_to_mp3_bytes(audio_path: Path, start_word_t: float, end_word_t: float) -> bytes | None:
+    """
+    使用 imageio_ffmpeg 提供的 ffmpeg 绝对路径，子进程截取 [ss, end_abs] 秒并输出 MP3（libmp3lame）。
+    写入临时文件再读回，供 data:audio/mpeg;base64 内嵌；任意失败返回 None。
+    """
+    tmp_path: Path | None = None
+    try:
+        exe = _get_ffmpeg_exe()
+        if not exe or not audio_path.is_file():
+            return None
+        media_d = _ffprobe_duration_sec(audio_path)
+        ss, dur = _padded_window_sec(start_word_t, end_word_t, media_d)
+        end_abs = float(ss) + float(dur)
+        fd, tmp = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        tmp_path = Path(tmp)
+        cmd = [
+            exe,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-y",
+            "-i",
+            str(audio_path.resolve()),
+            "-ss",
+            f"{ss:.6f}",
+            "-to",
+            f"{end_abs:.6f}",
+            "-vn",
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            "-f",
+            "mp3",
+            str(tmp_path),
+        ]
+        logger.info(
+            "ffmpeg mp3 slice: exe=%s -ss=%.6f -to=%.6f input=%s",
+            exe,
+            ss,
+            end_abs,
+            audio_path.name,
+        )
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=300,
+            check=False,
+            **_subprocess_stealth_kwargs(),
+        )
+        if r.returncode != 0:
+            err = (r.stderr or b"")[:800].decode("utf-8", errors="replace")
+            logger.warning("ffmpeg mp3 slice failed rc=%s: %s", r.returncode, err)
+            return None
+        out = tmp_path.read_bytes()
+        if len(out) < 32:
+            logger.warning("ffmpeg mp3 slice produced empty/short output")
+            return None
+        return out
+    except Exception as e:
+        logger.warning("ffmpeg mp3 slice exception: %s", e)
+        return None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def slice_audio_file_to_base64(
+    audio_path: str | Path,
     start_sec: float,
     end_sec: float,
 ) -> str:
     """
-    在词级锚定的 [start_sec, end_sec] 上应用非对称缓冲：
-    开头仅回退 PAD_START_SEC（精准切入提问），结尾延长 PAD_END_SEC（保留信息冗余）。
-    导出 MP3 至内存，返回 Base64 字符串（不含 data URI 前缀）。
+    词级时间 [start_sec, end_sec] + 非对称缓冲，经 ffmpeg 导出 MP3 片段，返回纯 Base64 ASCII。
+    失败时返回空字符串（不抛异常）。
     """
-    duration_ms = len(audio_segment)
-    start_ms = max(0, int((float(start_sec) - PAD_START_SEC) * 1000))
-    end_ms = min(duration_ms, int((float(end_sec) + PAD_END_SEC) * 1000))
-    if start_ms >= end_ms:
-        end_ms = min(duration_ms, start_ms + 300)
-
-    chunk = audio_segment[start_ms:end_ms]
-
-    buf = io.BytesIO()
     try:
-        chunk.export(buf, format="mp3", bitrate="128k")
+        raw = _ffmpeg_slice_to_mp3_bytes(Path(audio_path), start_sec, end_sec)
+        if not raw:
+            return ""
+        return base64.b64encode(raw).decode("ascii")
     except Exception as e:
-        raise RuntimeError(
-            "MP3 导出失败（请确认已安装 ffmpeg 且在 PATH 中）: " + str(e)
-        ) from e
-    buf.seek(0)
-    raw = buf.read()
-    return base64.b64encode(raw).decode("ascii")
+        logger.warning("slice_audio_file_to_base64: %s", e)
+        return ""
 
 
 def _words_to_index_map(words_list: List[TranscriptionWord]) -> Dict[int, TranscriptionWord]:
@@ -162,10 +382,46 @@ def _risk_time_range(
     return t0, t1
 
 
+def format_transcript_snippet(
+    by_index: Dict[int, TranscriptionWord],
+    start_word_index: int,
+    end_word_index: int,
+) -> str:
+    """词索引闭区间内拼接转写文本，供审查台与说明使用。"""
+    parts: List[str] = []
+    lo, hi = start_word_index, end_word_index
+    if lo > hi:
+        lo, hi = hi, lo
+    for idx in range(lo, hi + 1):
+        w = by_index.get(idx)
+        if w and (w.text or "").strip():
+            parts.append(w.text.strip())
+    return " ".join(parts) if parts else "（该范围内无转写词）"
+
+
+def snippet_audio_mp3_bytes(
+    audio_path: str | Path,
+    words_list: List[TranscriptionWord],
+    start_word_index: int,
+    end_word_index: int,
+) -> bytes | None:
+    """导出与翻车片段对齐的 MP3 字节（供 Streamlit st.audio format=audio/mpeg）；失败返回 None。"""
+    ap = Path(audio_path)
+    if not ap.is_file():
+        return None
+    by_index = _words_to_index_map(words_list)
+    try:
+        t0, t1 = _risk_time_range(by_index, start_word_index, end_word_index)
+        return _ffmpeg_slice_to_mp3_bytes(ap, t0, t1)
+    except (KeyError, ValueError, OSError):
+        return None
+
+
 def _render_html(
     report: AnalysisReport,
     cards: list[dict],
     *,
+    total_score_deduction: str = "",
     watermark_line: str = "",
     generated_footer_line: str = "",
 ) -> str:
@@ -174,6 +430,7 @@ def _render_html(
     return tpl.render(
         scene=report.scene_analysis,
         total_score=report.total_score,
+        total_score_deduction=total_score_deduction or "",
         cards=cards,
         watermark_line=watermark_line or "",
         generated_footer_line=generated_footer_line or "",
@@ -202,15 +459,38 @@ def generate_html_report(
     )
 
     by_index = _words_to_index_map(words_list)
-    audio_seg = AudioSegment.from_file(str(ap))
 
     cards: list[dict] = []
     for idx, rp in enumerate(report_display.risk_points, start=1):
-        t0, t1 = _risk_time_range(
-            by_index, rp.start_word_index, rp.end_word_index
-        )
-        b64 = slice_audio_to_base64(audio_seg, t0, t1)
-        data_uri = f"data:audio/mp3;base64,{b64}"
+        data_uri = ""
+        time_label = "人工复盘点（无自动音频切片）"
+        original_text = ""
+        audio_extraction_failed = False
+        if not rp.is_manual_entry:
+            llm_ot = (rp.original_text or "").strip()
+            original_text = (
+                llm_ot
+                if llm_ot
+                else format_transcript_snippet(
+                    by_index, rp.start_word_index, rp.end_word_index
+                )
+            )
+            try:
+                t0, t1 = _risk_time_range(
+                    by_index, rp.start_word_index, rp.end_word_index
+                )
+                b64 = slice_audio_file_to_base64(ap, t0, t1)
+                if b64:
+                    data_uri = f"data:audio/mpeg;base64,{b64}"
+                else:
+                    audio_extraction_failed = True
+                time_label = (
+                    f"{t0:.2f}s — {t1:.2f}s（词 {rp.start_word_index}–{rp.end_word_index}）"
+                )
+            except (KeyError, ValueError):
+                time_label = "无法对齐词索引（无音频切片）"
+        else:
+            original_text = "（人工增补条目：无词级时间锚，以下正文见 Tier 1 / Tier 2 / 改进建议。）"
         cards.append(
             {
                 "index": idx,
@@ -218,21 +498,27 @@ def generate_html_report(
                 "tier1": rp.tier1_general_critique,
                 "tier2": rp.tier2_qa_alignment,
                 "improvement": rp.improvement_suggestion,
-                "time_label": f"{t0:.2f}s — {t1:.2f}s（词 {rp.start_word_index}–{rp.end_word_index}）",
+                "deduction_reason": rp.deduction_reason or "",
+                "time_label": time_label,
                 "audio_data_uri": data_uri,
+                "has_audio": bool(data_uri),
+                "audio_extraction_failed": audio_extraction_failed,
+                "original_text": original_text or "",
+                "is_manual": bool(rp.is_manual_entry),
             }
         )
 
     ts = ""
     if opts.show_generated_timestamp:
         ts = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-    gen_line = "AI 路演教练与复盘系统 · report_builder · 词级索引零误差切割"
+    gen_line = "AI 路演教练与复盘系统 · report_builder · ffmpeg 词级 MP3 切片 · Base64 单文件"
     if ts:
         gen_line = f"{gen_line} · 生成 {ts}"
 
     html = _render_html(
         report_display,
         cards,
+        total_score_deduction=report_display.total_score_deduction_reason or "",
         watermark_line=(opts.footer_watermark or "").strip(),
         generated_footer_line=gen_line,
     )
@@ -369,6 +655,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         .score-meta { flex: 1; min-width: 200px; }
         .score-meta .big { font-size: 1.1rem; color: var(--accent); font-weight: 600; }
         .score-meta .hint { margin-top: 6px; font-size: 0.88rem; color: var(--muted); }
+        .score-deduction {
+            margin-top: 14px;
+            padding: 12px 14px;
+            border-radius: 12px;
+            background: rgba(251,191,36,0.08);
+            border-left: 3px solid var(--warn);
+            font-size: 0.9rem;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
 
         .card {
             background: var(--card);
@@ -429,6 +726,27 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             margin-bottom: 8px;
         }
         audio { width: 100%; height: 42px; border-radius: 10px; }
+        .original-text {
+            margin-top: 14px;
+            padding: 14px 16px;
+            border-radius: 12px;
+            background: rgba(0,0,0,0.25);
+            border: 1px solid var(--line);
+            font-size: 0.92rem;
+            line-height: 1.55;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        .original-text .lbl {
+            display: block;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+        .block-body.prewrap, .deduction-reason { white-space: pre-wrap; word-break: break-word; }
         footer {
             text-align: center;
             margin-top: 40px;
@@ -469,7 +787,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                 </div>
                 <div class="score-meta">
                     <div class="big">综合得分 {{ total_score }} / 100</div>
-                    <div class="hint">以下每个翻车片段均可独立试听（开头约 1.5s、结尾约 8s 非对称物理缓冲）</div>
+                    <div class="hint">以下每个翻车片段均可独立试听（Base64 内嵌 MP3；开头约 1.5s、结尾约 8s 非对称缓冲）；人工条目无切片。</div>
+                    <div class="score-deduction"><strong>总分扣分说明</strong><br/>{{ total_score_deduction or "（未填写）" }}</div>
                 </div>
             </div>
         </header>
@@ -485,6 +804,9 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                 {% else %}
                 <span class="badge badge-mild">{{ c.risk_level }}</span>
                 {% endif %}
+                {% if c.is_manual %}
+                <span class="badge badge-medium" style="background: rgba(248,113,113,0.25); color: #fca5a5; border: 1px solid rgba(248,113,113,0.45);">【人工发现】</span>
+                {% endif %}
                 <span class="time-pill">{{ c.time_label }}</span>
             </div>
 
@@ -499,9 +821,23 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                 <p>{{ c.improvement }}</p>
             </div>
 
+            <p class="block-title">扣分 / QA 口径对照</p>
+            <div class="block-body tier2 deduction-reason">{{ c.deduction_reason or "（未填写）" }}</div>
+
             <div class="player">
-                <span>翻车片段试听（MP3）</span>
+                <span>翻车片段试听（内嵌 Base64 · MP3）</span>
+                {% if c.has_audio %}
                 <audio controls preload="metadata" src="{{ c.audio_data_uri }}"></audio>
+                {% elif c.audio_extraction_failed %}
+                <p style="color:red; font-size:12px;">🔈 受限于当前电脑的安全拦截策略，该片段音频提取失败，请参考下方文字阅览。</p>
+                {% elif c.is_manual %}
+                <p class="sub" style="color: var(--muted); margin: 0;">本条目为【人工发现】，无自动音频切片。</p>
+                {% else %}
+                <p class="sub" style="color: var(--muted); margin: 0;">本条目无自动音频切片（索引无法对齐等）。</p>
+                {% endif %}
+                {% if c.original_text %}
+                <div class="original-text"><span class="lbl">发言人口述实录</span>{{ c.original_text }}</div>
+                {% endif %}
             </div>
         </article>
         {% endfor %}
@@ -522,7 +858,7 @@ if __name__ == "__main__":
     print("正在切割真实音频并渲染终极报告...", flush=True)
     try:
         path = build_html_report()
-    except (OSError, ValidationError, ValueError, KeyError, RuntimeError) as e:
+    except (OSError, ValidationError, ValueError, KeyError) as e:
         print(f"构建失败: {e}", file=sys.stderr, flush=True)
         raise SystemExit(1) from e
     print(f"完成。请用浏览器双击打开: {path}", flush=True)

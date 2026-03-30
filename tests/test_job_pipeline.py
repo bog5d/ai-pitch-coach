@@ -1,5 +1,6 @@
 """
 job_pipeline 纯函数与上下文契约（不调用外网 API）。
+仓库发版 V6.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 运行：python tests/test_job_pipeline.py
 """
 from __future__ import annotations
@@ -50,6 +51,20 @@ class TestJobPipeline(unittest.TestCase):
         ]
         out = mask_words_for_llm(words, ["福创投"])
         self.assertEqual(out[0].text, "***很好")
+
+    def test_mask_words_long_keyword_first(self) -> None:
+        """长词先于短词替换，避免短词破坏长词匹配。"""
+        words = [
+            TranscriptionWord(
+                word_index=0,
+                text="我们使用华为云服务",
+                start_time=0.0,
+                end_time=0.5,
+                speaker_id="S1",
+            )
+        ]
+        out = mask_words_for_llm(words, ["华为", "华为云"])
+        self.assertEqual(out[0].text, "我们使用***服务")
 
     def test_report_html_display_masking(self) -> None:
         report = AnalysisReport(

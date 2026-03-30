@@ -1,6 +1,8 @@
 """
-一键生成「纯净交付」文件夹：仅拷贝白名单资源，排除 .env / 测试 / 缓存等。
+一键生成「纯净交付」文件夹 + 交付级 ZIP（Green-Box Release）。
 运行：在项目根目录执行  python build_release.py
+发版版本以本文件内 CURRENT_VERSION 为准（当前 V6.2）；目录 / ZIP 名随其变化。
+若根目录存在 `.streamlit/`（如 `config.toml` 上调 `maxUploadSize`），会一并打入交付目录。
 
 编码策略（跨中文 Windows / CMD / Python）：
 - 交付目录中的「一键启动系统.bat」一律以 utf-8-sig（带 BOM）写入，便于 CMD 识别 UTF-8；
@@ -23,16 +25,34 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 ROOT = Path(__file__).resolve().parent
-OUT_NAME = "AI路演教练_纯净交付版"
+
+# 发版时与主理人约定版本对齐；ZIP / 交付文件夹名均由此派生
+CURRENT_VERSION = "V6.2"
+OUT_NAME = f"AI路演教练_纯净交付版_{CURRENT_VERSION}"
 OUT = ROOT / OUT_NAME
 
 WHITELIST_DIRS = ["src"]
-WHITELIST_FILES = [
+# Streamlit 服务端配置（上传上限等），与 app 同级时由 streamlit 自动读取
+STREAMLIT_DIR = ".streamlit"
+
+# 强制存在，否则打包失败（架构传承）
+REQUIRED_ROOT_FILES = [
     "app.py",
     "requirements.txt",
-    "一键启动系统.bat",
-    "写给同事的使用说明书.txt",
+    "README.md",
+    "ARCHITECTURE.md",
 ]
+
+# 存在则拷贝，缺失不报错
+OPTIONAL_ROOT_FILES = [
+    "写给同事的使用说明书.txt",
+    "小白保姆级操作手册.md",
+    "V6.2_新功能与体验大升级.txt",
+    ".env.example",
+]
+
+# 由脚本生成，不依赖仓库里同名文件编码
+GENERATED_BAT = "一键启动系统.bat"
 
 # 交付包内 .bat 由脚本生成（不依赖源文件编码）；utf-8-sig + 环境变量 = 国内 Windows CMD 友好
 _BAT_RELEASE_LINES = [
@@ -86,7 +106,6 @@ def _normalize_requirements_text(text: str) -> str:
         if not line:
             lines.append("")
             continue
-        # 去掉零宽字符等（常见于错误复制）
         line = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", line)
         lines.append(line)
     while lines and lines[-1] == "":
@@ -113,11 +132,22 @@ def _write_release_bat(dest: Path) -> None:
     _write_text_crlf_utf8_sig(dest, content)
 
 
+def _discover_extra_launch_scripts() -> tuple[list[str], list[str]]:
+    """根目录下除「一键启动系统.bat」外的 .bat / .sh，用于一并打入交付包。"""
+    bats = sorted(
+        p.name
+        for p in ROOT.glob("*.bat")
+        if p.is_file() and p.name != GENERATED_BAT
+    )
+    shs = sorted(p.name for p in ROOT.glob("*.sh") if p.is_file())
+    return bats, shs
+
+
 def _copy_whitelist_file(src_name: str, dest_dir: Path) -> None:
     src = ROOT / src_name
     dst = dest_dir / src_name
 
-    if src_name == "一键启动系统.bat":
+    if src_name == GENERATED_BAT:
         _write_release_bat(dst)
         return
 
@@ -135,19 +165,52 @@ def _copy_whitelist_file(src_name: str, dest_dir: Path) -> None:
         _write_text_crlf_utf8_sig(dst, text)
         return
 
-    # app.py 等：UTF-8 无 BOM 写出，换行 CRLF 减少跨编辑器差异
+    # app.py / *.md / .env.example 等：UTF-8 无 BOM + CRLF
     text = _read_text_flexible(src)
     _write_text_crlf_utf8(dst, text)
 
 
-def main() -> int:
+def _validate_prereqs(extra_bats: list[str], extra_shs: list[str]) -> list[str]:
+    """返回缺失项列表；空表示可继续。"""
     missing: list[str] = []
-    for name in WHITELIST_FILES:
+    for name in REQUIRED_ROOT_FILES:
         if not (ROOT / name).is_file():
             missing.append(name)
     for d in WHITELIST_DIRS:
         if not (ROOT / d).is_dir():
             missing.append(f"{d}/")
+    for name in extra_bats + extra_shs:
+        if not (ROOT / name).is_file():
+            missing.append(name)
+    return missing
+
+
+def _copy_dot_streamlit(dest_root: Path) -> None:
+    """将项目根 `.streamlit` 目录原样拷入交付目录（不存在则跳过，不阻断打包）。"""
+    src = ROOT / STREAMLIT_DIR
+    if not src.is_dir():
+        return
+    dst = dest_root / STREAMLIT_DIR
+    shutil.copytree(
+        src,
+        dst,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".mypy_cache"),
+    )
+
+
+def _make_release_zip() -> Path:
+    """将纯净版文件夹打成 ZIP，位于项目根目录（与 OUT_NAME 一致，随 CURRENT_VERSION 变化）。"""
+    zip_base = str(ROOT / OUT_NAME)
+    zip_path = Path(zip_base + ".zip")
+    if zip_path.is_file():
+        zip_path.unlink()
+    created = shutil.make_archive(zip_base, "zip", root_dir=str(ROOT), base_dir=OUT_NAME)
+    return Path(created)
+
+
+def main() -> int:
+    extra_bats, extra_shs = _discover_extra_launch_scripts()
+    missing = _validate_prereqs(extra_bats, extra_shs)
     if missing:
         print("错误：以下白名单项不存在，请补齐后再打包：")
         for m in missing:
@@ -170,15 +233,41 @@ def main() -> int:
             ),
         )
 
-    for fname in WHITELIST_FILES:
+    _copy_dot_streamlit(OUT)
+
+    _write_release_bat(OUT / GENERATED_BAT)
+
+    for fname in REQUIRED_ROOT_FILES:
         _copy_whitelist_file(fname, OUT)
+
+    for fname in OPTIONAL_ROOT_FILES:
+        if (ROOT / fname).is_file():
+            _copy_whitelist_file(fname, OUT)
+
+    for name in extra_bats + extra_shs:
+        shutil.copy2(ROOT / name, OUT / name)
 
     env_out = OUT / ".env"
     env_out.write_bytes(b"")
 
+    try:
+        zip_file = _make_release_zip()
+    except OSError as e:
+        print(f"\033[91m错误：生成 ZIP 失败：{e}\033[0m")
+        print(f"纯净文件夹已生成，可手动压缩：{OUT}")
+        return 1
+
+    zip_name = zip_file.name
     print()
-    print("\033[1m\033[92m🎉 打包成功！请直接将【AI路演教练_纯净交付版】文件夹拷贝进 U 盘，其余文件无需理会！\033[0m")
-    print(f"输出目录：{OUT}")
+    print(
+        "\033[1m\033[92m✅ 纯净交付版打包并压缩成功！\033[0m"
+        f"\n\033[92m您现在可以直接将 【{zip_name}】 通过微信发送给同事或高管。\033[0m"
+    )
+    print(f"\033[96m文件夹：{OUT}\033[0m")
+    print(f"\033[96m压缩包：{zip_file.resolve()}\033[0m")
+    print(
+        "\033[90m（已保留解压后的文件夹，便于本地校验；分发以 ZIP 为主。）\033[0m"
+    )
     print()
     return 0
 

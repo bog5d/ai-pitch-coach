@@ -2,7 +2,10 @@
 # （阿里云兜底走 REST，无需 dashscope；pydantic 供 schema 使用）
 """
 真实语音转写模块：硅基流动（主） + 阿里云 DashScope Paraformer（备）。
+仓库发版 V6.2（与 build_release.CURRENT_VERSION 对齐）。
 严格产出带词级时间戳的 TranscriptionWord 列表，供流水线后续切割使用。
+入口 `audio_path` 可由上层在 ASR 前经 audio_preprocess.smart_compress_media 预处理（大文件网关 MP3 等）。
+（敏感词替换在转写完成之后由 job_pipeline.mask_words_for_llm 执行，词表经 sensitive_words.parse_sensitive_words 解析并按词长排序后传入。）
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from urllib import request as urllib_request
 import requests
 from dotenv import load_dotenv
 
+from retry_policy import run_with_backoff
 from schema import TranscriptionWord
 from runtime_paths import get_project_root, get_writable_app_root
 
@@ -28,6 +32,27 @@ from runtime_paths import get_project_root, get_writable_app_root
 load_dotenv(get_writable_app_root() / ".env")
 
 logger = logging.getLogger(__name__)
+
+
+def _requests_get_with_retry(url: str, **kwargs: Any) -> requests.Response:
+    def _do() -> requests.Response:
+        r = requests.get(url, **kwargs)
+        if r.status_code in (429, 502, 503, 504):
+            r.raise_for_status()
+        return r
+
+    return run_with_backoff(_do, logger=logger, operation=f"GET {url[:56]}")
+
+
+def _requests_post_with_retry(url: str, **kwargs: Any) -> requests.Response:
+    def _do() -> requests.Response:
+        r = requests.post(url, **kwargs)
+        if r.status_code in (429, 502, 503, 504):
+            r.raise_for_status()
+        return r
+
+    return run_with_backoff(_do, logger=logger, operation=f"POST {url[:56]}")
+
 
 SILICONFLOW_TRANSCRIBE_URL = "https://api.siliconflow.cn/v1/audio/transcriptions"
 SILICONFLOW_MODEL = "FunAudioLLM/SenseVoiceSmall"
@@ -176,7 +201,7 @@ def transcribe_siliconflow(file_path: str) -> List[TranscriptionWord]:
             ("response_format", (None, "verbose_json")),
             ("timestamp_granularities[]", (None, "word")),
         ]
-        resp = requests.post(
+        resp = _requests_post_with_retry(
             SILICONFLOW_TRANSCRIBE_URL,
             headers=headers,
             files=files,
@@ -217,7 +242,9 @@ def _dashscope_get_upload_policy(api_key: str, model_name: str) -> dict[str, Any
         "Content-Type": "application/json",
     }
     params = {"action": "getPolicy", "model": model_name}
-    r = requests.get(ALIYUN_UPLOAD_POLICY_URL, headers=headers, params=params, timeout=60)
+    r = _requests_get_with_retry(
+        ALIYUN_UPLOAD_POLICY_URL, headers=headers, params=params, timeout=60
+    )
     if r.status_code != 200:
         raise RuntimeError(f"获取 DashScope 上传凭证失败 HTTP {r.status_code}: {r.text[:500]}")
     body = r.json()
@@ -241,7 +268,9 @@ def _dashscope_upload_file(policy_data: dict[str, Any], file_path: str) -> str:
             "success_action_status": (None, "200"),
             "file": (path.name, f),
         }
-        up = requests.post(policy_data["upload_host"], files=form_files, timeout=600)
+        up = _requests_post_with_retry(
+            policy_data["upload_host"], files=form_files, timeout=600
+        )
     if up.status_code != 200:
         raise RuntimeError(f"上传音频到 DashScope 临时存储失败 HTTP {up.status_code}: {up.text[:500]}")
     return f"oss://{key}"
@@ -321,7 +350,7 @@ def _dashscope_submit_transcription_rest(api_key: str, oss_url: str) -> str:
             "language_hints": ["zh", "en"],
         },
     }
-    r = requests.post(
+    r = _requests_post_with_retry(
         DASHSCOPE_TRANSCRIPTION_URL,
         headers=headers,
         data=json.dumps(body),
@@ -349,7 +378,7 @@ def _dashscope_poll_task_rest(api_key: str, task_id: str) -> list[Any]:
     poll_interval = 2.0
 
     while time.time() < deadline:
-        resp = requests.post(url, headers=headers, timeout=120)
+        resp = _requests_post_with_retry(url, headers=headers, timeout=120)
         if resp.status_code != 200:
             raise RuntimeError(f"阿里云查询任务 HTTP {resp.status_code}: {resp.text[:800]}")
         body = resp.json()

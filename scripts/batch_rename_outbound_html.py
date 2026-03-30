@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""批量将复盘报告 HTML 重命名为外发脱敏文件名（一次性脚本）。"""
+"""批量将复盘报告 HTML 重命名为外发脱敏文件名（一次性脚本）。仓库发版 V6.2（与根目录 build_release.CURRENT_VERSION 对齐）。"""
 from __future__ import annotations
 
 import re
