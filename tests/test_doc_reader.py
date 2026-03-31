@@ -1,6 +1,6 @@
 """
 document_reader 集成测试：Token 截断与损坏文件容错。
-仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 """
-本地草稿箱：原子落盘与恢复（V7.0）。
+本地草稿箱：原子落盘与恢复（随 CURRENT_VERSION，始于 V7.0）。
 草稿目录位于可写应用根下的隐藏文件夹 `.drafts/`（与 .env、默认归档一致）。
 发版与根目录 build_release.py → CURRENT_VERSION 对齐。
 """

@@ -1,6 +1,6 @@
 """
 audio_filename_hints 单元测试。
-仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
 运行：python tests/test_audio_filename_hints.py
 """
 from __future__ import annotations

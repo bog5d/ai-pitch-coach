@@ -1,4 +1,4 @@
-"""Pydantic 数据契约层 — 仓库发版 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。"""
+"""Pydantic 数据契约层 — 仓库发版 V7.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。"""
 
 from pydantic import BaseModel, Field
 from typing import List, Literal
@@ -28,8 +28,9 @@ class RiskPoint(BaseModel):
     original_text: str = Field(
         default="",
         description=(
-            "提取该片段对应的原文。必须进行去口语化的轻度书面化润色（剔除嗯/啊等废话，保留原意）。"
-            "严禁在此字段加入任何点评或转述，保持对话格式纯净。"
+            "该片段在逐字稿中对应范围的实录占位。"
+            "严禁书面化润色，严禁混入 QA，必须 100% 忠实于底层转写。"
+            "此字段在后端将进行严格的索引一致性校验并物理覆写！"
         ),
     )
     start_word_index: int = Field(..., description="翻车片段开始的词汇索引")

@@ -1,5 +1,5 @@
 """
-V7.0 · 轻量级 API 连通性探针：极小 Token，验证 .env 中硅基流动 + DeepSeek 是否可用。
+V7.2 · 轻量级 API 连通性探针：极小 Token，验证 .env 中硅基流动 + DeepSeek 是否可用。
 （仓库发版主线与根目录 build_release.py 之 CURRENT_VERSION 对齐。）
 运行：python test_apis.py
 """

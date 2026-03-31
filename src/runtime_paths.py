@@ -5,7 +5,7 @@
 - get_writable_app_root：可写根（EXE 旁或项目根），用于 .env、默认归档目录、output 等；
 - get_resource_path：相对项目根的拼接（供非 app 模块使用，与 app.py 顶部函数语义一致）。
 
-仓库发版 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+仓库发版 V7.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 

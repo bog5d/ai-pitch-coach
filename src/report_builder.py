@@ -2,7 +2,8 @@
 # 说明：ffmpeg 路径仅来自 imageio_ffmpeg.get_ffmpeg_exe()，不依赖系统 PATH。
 """
 终极报告拼装：真实 m4a + 词级时间戳 + AnalysisReport → 单文件 Base64 内嵌 MP3 的 HTML。
-仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
+V7.2：`generate_html_report` 前 `apply_asr_original_text_override` 按词索引物理覆写 `original_text`，与试听切片同源。
 """
 from __future__ import annotations
 
@@ -245,11 +246,15 @@ def _padded_window_sec(
         t1 = min((media_duration or t0 + 1.0), t0 + 0.35)
         dur = max(0.05, t1 - t0)
     elif dur > PHYSICAL_MAX_DURATION:
-        logger.warning(
-            "[Safety Guard] 检测到超长索引（%.2fs），已物理截断至 180s 极限以保护报告体积。",
-            dur,
-        )
+        # 掐头留尾：超长窗口保留末尾 180s（答复往往在区间后部，避免只听到冗长提问）
+        orig_span = dur
+        t_end = t1
+        t0 = max(0.0, float(t_end) - PHYSICAL_MAX_DURATION)
         dur = PHYSICAL_MAX_DURATION
+        logger.warning(
+            "[Safety Guard] 检测到超长索引（%.2fs），已执行【保留末尾 180s】截断以保护报告体积。",
+            orig_span,
+        )
     return t0, dur
 
 
@@ -399,6 +404,76 @@ def format_transcript_snippet(
     return " ".join(parts) if parts else "（该范围内无转写词）"
 
 
+def verbatim_original_text_from_word_indices(
+    by_index: Dict[int, TranscriptionWord],
+    start_word_index: int,
+    end_word_index: int,
+) -> str:
+    """
+    V7.2：按索引从底层转写强制拼接「发言人口述实录」用正文。
+    同一说话人连续词段合并为一行，按出现顺序将前两路说话人标为 [投资人] / [发言人]，其余为 [其他]。
+    """
+    lo, hi = start_word_index, end_word_index
+    if lo > hi:
+        lo, hi = hi, lo
+    ordered_speakers: list[str] = []
+    for idx in range(lo, hi + 1):
+        w = by_index.get(idx)
+        if not w:
+            continue
+        sid = (w.speaker_id or "").strip() or "未知"
+        if sid not in ordered_speakers:
+            ordered_speakers.append(sid)
+    label_map: dict[str, str] = {}
+    for i, sid in enumerate(ordered_speakers):
+        if i == 0:
+            label_map[sid] = "投资人"
+        elif i == 1:
+            label_map[sid] = "发言人"
+        else:
+            label_map[sid] = "其他"
+
+    lines: list[str] = []
+    cur_sid: str | None = None
+    buf: list[str] = []
+    for idx in range(lo, hi + 1):
+        w = by_index.get(idx)
+        if not w:
+            continue
+        t = (w.text or "").strip()
+        if not t:
+            continue
+        sid = (w.speaker_id or "").strip() or "未知"
+        if cur_sid is not None and sid != cur_sid:
+            lines.append(f"[{label_map.get(cur_sid, '其他')}]：" + "".join(buf))
+            buf = []
+        cur_sid = sid
+        buf.append(t)
+    if buf and cur_sid is not None:
+        lines.append(f"[{label_map.get(cur_sid, '其他')}]：" + "".join(buf))
+    if not lines:
+        return "（该范围内无转写词）"
+    return "\n".join(lines)
+
+
+def apply_asr_original_text_override(
+    report: AnalysisReport,
+    words_list: List[TranscriptionWord],
+) -> AnalysisReport:
+    """用大模型给出的起止索引，从 words_list 物理覆写每条 RiskPoint 的 original_text（人工条目跳过）。"""
+    by_index = _words_to_index_map(words_list)
+    new_risks: List[RiskPoint] = []
+    for rp in report.risk_points:
+        if rp.is_manual_entry:
+            new_risks.append(rp)
+            continue
+        block = verbatim_original_text_from_word_indices(
+            by_index, rp.start_word_index, rp.end_word_index
+        )
+        new_risks.append(rp.model_copy(update={"original_text": block}))
+    return report.model_copy(update={"risk_points": new_risks})
+
+
 def snippet_audio_mp3_bytes(
     audio_path: str | Path,
     words_list: List[TranscriptionWord],
@@ -454,8 +529,9 @@ def generate_html_report(
         raise FileNotFoundError(f"缺少录音文件: {ap}")
 
     opts = export_options or HtmlExportOptions()
+    report_for_export = apply_asr_original_text_override(report_obj, words_list)
     report_display = _report_for_html_display(
-        report_obj, opts.content_replace_map
+        report_for_export, opts.content_replace_map
     )
 
     by_index = _words_to_index_map(words_list)
@@ -467,13 +543,8 @@ def generate_html_report(
         original_text = ""
         audio_extraction_failed = False
         if not rp.is_manual_entry:
-            llm_ot = (rp.original_text or "").strip()
-            original_text = (
-                llm_ot
-                if llm_ot
-                else format_transcript_snippet(
-                    by_index, rp.start_word_index, rp.end_word_index
-                )
+            original_text = (rp.original_text or "").strip() or format_transcript_snippet(
+                by_index, rp.start_word_index, rp.end_word_index
             )
             try:
                 t0, t1 = _risk_time_range(

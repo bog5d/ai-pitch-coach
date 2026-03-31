@@ -2,7 +2,7 @@
 # （阿里云兜底走 REST，无需 dashscope；pydantic 供 schema 使用）
 """
 真实语音转写模块：硅基流动（主） + 阿里云 DashScope Paraformer（备）。
-仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
 严格产出带词级时间戳的 TranscriptionWord 列表，供流水线后续切割使用。
 入口 `audio_path` 可由上层在 ASR 前经 audio_preprocess.smart_compress_media 预处理（大文件网关 MP3 等）。
 （敏感词替换在转写完成之后由 job_pipeline.mask_words_for_llm 执行，词表经 sensitive_words.parse_sensitive_words 解析并按词长排序后传入。）

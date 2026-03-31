@@ -1,6 +1,6 @@
 """
 PyInstaller 专用启动器：冻结环境下进入 _MEIPASS 并拉起 Streamlit。
-仓库发版 V7.0（与 build_release.py → CURRENT_VERSION 对齐；EXE 为实验性交付形态）。
+仓库发版 V7.2（与 build_release.py → CURRENT_VERSION 对齐；EXE 为实验性交付形态）。
 
 注意：
 - 切勿使用 --server.headless=true，否则不会自动打开浏览器，用户会误以为程序无响应。

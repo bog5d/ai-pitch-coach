@@ -1,6 +1,6 @@
 """
 极端边界自动化测试：不依赖 Streamlit、不人肉点击。
-仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
 运行：python tests/test_extreme_cases.py
 """
 from __future__ import annotations
@@ -107,11 +107,12 @@ class TestEvaluatePitchMocked(unittest.TestCase):
 
 
 class TestPaddedWindowPhysicalCap(unittest.TestCase):
-    """V6.2：超长词级窗口须被物理截断为 180s。"""
+    """V7.1：超长词级窗口保留末尾 180s（掐头留尾）。"""
 
-    def test_caps_duration_at_180(self) -> None:
+    def test_caps_duration_at_180_tail_preserved(self) -> None:
+        # end_word_t=400 → t1=408，跨度超 180 → t0 后移至 408-180=228
         t0, dur = _padded_window_sec(0.0, 400.0, None)
-        self.assertEqual(t0, 0.0)
+        self.assertEqual(t0, 228.0)
         self.assertEqual(dur, PHYSICAL_MAX_DURATION)
         self.assertEqual(PHYSICAL_MAX_DURATION, 180.0)
 

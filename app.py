@@ -1,6 +1,6 @@
 """
 AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
-发版主线 V7.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+发版主线 V7.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 
 支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
@@ -16,6 +16,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from pathlib import Path
@@ -62,6 +63,7 @@ from job_pipeline import (
     safe_fs_segment,
 )
 from sensitive_words import parse_sensitive_words
+from transcriber import transcribe_audio
 from report_builder import (
     HtmlExportOptions,
     desensitize_text,
@@ -524,6 +526,41 @@ def _v3_render_review_workbench() -> None:
                 _v3_render_single_stem_review(stem)
 
 
+def _v71_transcribe_upload_to_plain(uf) -> str:
+    """仅转写上传文件为可读纯文本（与主流程一致：≥10MB 先走智能压缩网关）。"""
+    raw = uf.getvalue()
+    suffix = Path(uf.name).suffix or ".wav"
+    f1 = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    f1.write(raw)
+    f1.close()
+    paths: list[Path] = [Path(f1.name)]
+    work = paths[0]
+    try:
+        if len(raw) >= 10 * 1024 * 1024:
+            cres = smart_compress_media(raw, filename_hint=uf.name)
+            if cres.did_compress:
+                f2 = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+                f2.write(cres.data)
+                f2.close()
+                p2 = Path(f2.name)
+                paths.append(p2)
+                try:
+                    work.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                paths.remove(work)
+                work = p2
+        words = transcribe_audio(work, out_json_path=None)
+        parts = [(w.text or "").strip() for w in words if (w.text or "").strip()]
+        return " ".join(parts)
+    finally:
+        for p in paths:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _parse_filename_mask_lines(raw: str) -> dict[str, str]:
     """解析侧边栏「每行：原名⇒代号」或 原名=>代号 或 原名=代号。"""
     out: dict[str, str] = {}
@@ -930,6 +967,39 @@ def main() -> None:
 
     st.info(
         "💡 **建议**：尽量为每条录音上传 **对应该方向的 QA** 或口径材料；未上传时仍会生成报告。"
+    )
+
+    if "v71_plain_body" not in st.session_state:
+        st.session_state["v71_plain_body"] = ""
+
+    if st.button(
+        "📄 仅提取文字稿 (提取后可复制原话进行精准核实)",
+        key="v71_btn_extract_transcript",
+    ):
+        if not st.session_state.get("env_all_ok"):
+            st.error("请先在左侧侧栏完成 API 与 FFmpeg 全绿自检后再提取文字稿。")
+        elif not uploaded_list:
+            st.error("请先上传至少一个音频文件。")
+        else:
+            uf0 = uploaded_list[0]
+            if len(uploaded_list) > 1:
+                st.caption(
+                    f"当前对上传列表中的 **第 1 条** 执行转写：`{uf0.name}`（共 {len(uploaded_list)} 个文件）。"
+                )
+            try:
+                with st.spinner("正在转写，请稍候…"):
+                    plain = _v71_transcribe_upload_to_plain(uf0)
+                st.session_state["v71_plain_body"] = plain
+                st.success(f"已提取约 {len(plain)} 字，可复制到「🎯 重点关注与定向核实」。")
+            except Exception as ex:
+                logging.getLogger("ai_pitch_coach.ui").exception("仅提取文字稿失败")
+                st.error(f"转写失败：{ex!s}")
+
+    st.text_area(
+        "提取的文字稿（可复制到上方逐录音「🎯 重点关注与定向核实」）",
+        key="v71_plain_body",
+        height=280,
+        help="先点击上方按钮；将 ASR 原话粘贴到定向核实框可显著降低切片错位。",
     )
 
     run = st.button(

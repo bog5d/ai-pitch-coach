@@ -1,5 +1,5 @@
 """
-V4.0 / V6.2 / V7.0 系统诊断日志：统一写入可写根目录下 debug.log，供一键下载与远程排障。（发版与 build_release.CURRENT_VERSION 对齐）
+V4.0 / V6.2 / V7.2 系统诊断日志：统一写入可写根目录下 debug.log，供一键下载与远程排障。（发版与 build_release.CURRENT_VERSION 对齐）
 """
 from __future__ import annotations
 

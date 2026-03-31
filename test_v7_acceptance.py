@@ -1,5 +1,5 @@
 """
-V7.0 一键验收脚本（主理人明早运行）。
+V7.0+ 一键验收脚本（草稿 + QA 分池；与当前 CURRENT_VERSION 可并存运行）。
 python test_v7_acceptance.py
 """
 from __future__ import annotations
@@ -48,7 +48,7 @@ def test_qa_truncation_50k() -> None:
 def main() -> None:
     test_drafts_dir_and_atomic_write()
     test_qa_truncation_50k()
-    print("V7.0 验收：全部断言通过。")
+    print("V7.x 验收（test_v7_acceptance）：全部断言通过。")
 
 
 if __name__ == "__main__":

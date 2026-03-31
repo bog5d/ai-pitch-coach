@@ -1,4 +1,4 @@
-"""report_builder.desensitize_text（pypinyin）。仓库发版 V7.0（与 build_release.CURRENT_VERSION 对齐）。"""
+"""report_builder.desensitize_text（pypinyin）。仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。"""
 from __future__ import annotations
 
 import sys

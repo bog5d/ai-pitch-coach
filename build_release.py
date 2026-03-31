@@ -1,7 +1,7 @@
 """
 一键生成「纯净交付」文件夹 + 交付级 ZIP（Green-Box Release）。
 运行：在项目根目录执行  python build_release.py
-发版版本以本文件内 CURRENT_VERSION 为准（当前 V7.0）；目录 / ZIP 名随其变化。
+发版版本以本文件内 CURRENT_VERSION 为准（当前 V7.2）；目录 / ZIP 名随其变化。
 若根目录存在 `.streamlit/`（如 `config.toml` 上调 `maxUploadSize`），会一并打入交付目录。
 
 编码策略（跨中文 Windows / CMD / Python）：
@@ -27,7 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent
 
 # 发版时与主理人约定版本对齐；ZIP / 交付文件夹名均由此派生
-CURRENT_VERSION = "V7.0"
+CURRENT_VERSION = "V7.2"
 OUT_NAME = f"AI路演教练_纯净交付版_{CURRENT_VERSION}"
 OUT = ROOT / OUT_NAME
 
@@ -49,6 +49,7 @@ OPTIONAL_ROOT_FILES = [
     "小白保姆级操作手册.md",
     "V6.2_新功能与体验大升级.txt",
     "V7.0_新功能与体验大升级.txt",
+    "V7.2_新功能与体验大升级.txt",
     ".env.example",
 ]
 
