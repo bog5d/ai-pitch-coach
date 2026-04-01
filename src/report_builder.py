@@ -2,8 +2,8 @@
 # 说明：ffmpeg 路径仅来自 imageio_ffmpeg.get_ffmpeg_exe()，不依赖系统 PATH。
 """
 终极报告拼装：真实 m4a + 词级时间戳 + AnalysisReport → 单文件 Base64 内嵌 MP3 的 HTML。
-仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
-V7.2：`generate_html_report` 前 `apply_asr_original_text_override` 按词索引物理覆写 `original_text`，与试听切片同源。
+仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。
+V7.5：`generate_html_report` 前 `apply_asr_original_text_override` 按词索引物理覆写 `original_text`，与试听切片同源。
 """
 from __future__ import annotations
 
@@ -410,7 +410,7 @@ def verbatim_original_text_from_word_indices(
     end_word_index: int,
 ) -> str:
     """
-    V7.2：按索引从底层转写强制拼接「发言人口述实录」用正文。
+    V7.5：按索引从底层转写强制拼接「发言人口述实录」用正文。
     同一说话人连续词段合并为一行，按出现顺序将前两路说话人标为 [投资人] / [发言人]，其余为 [其他]。
     """
     lo, hi = start_word_index, end_word_index

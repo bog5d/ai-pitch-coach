@@ -1,5 +1,5 @@
 """
-V7.0+ 一键验收脚本（草稿 + QA 分池；与当前 CURRENT_VERSION 可并存运行）。
+V7.5+ 一键验收脚本（草稿 + QA 分池；与当前 CURRENT_VERSION 可并存运行）。
 python test_v7_acceptance.py
 """
 from __future__ import annotations

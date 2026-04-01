@@ -22,13 +22,14 @@
 - [x] **阶段 4：前端组装**
   - Streamlit 控制台（`app.py`）；**编排层**已抽至 `src/job_pipeline.py`（`run_pitch_file_job`），便于 CLI/自动化复用。
 - [x] **阶段 4.1：交付与合规增强（v2.x）**
-  - **主交付**：`build_release.py` BAT 纯净包（推荐）；目录名带 `CURRENT_VERSION`（如 `AI路演教练_纯净交付版_V7.2`）；随包 **`V7.2_新功能与体验大升级.txt`** / `V7.0_…` / `V6.2_…` 等业务说明（见脚本白名单）；EXE 见 `PACKAGING_EXE.md`（实验性）。
+  - **主交付**：`build_release.py` BAT 纯净包（推荐）；目录名带 `CURRENT_VERSION`（如 `AI路演教练_纯净交付版_V7.5`）；随包 **`V7.5_新功能与体验大升级.txt`** / `V7.2_…` / `V7.0_…` / `V6.2_…` 等业务说明（见脚本白名单）；EXE 见 `PACKAGING_EXE.md`（实验性）。
   - **外发 HTML**：文件名脱敏 + 可选正文同规则替换 + 页脚水印（`HtmlExportOptions`，JSON 分析件保持原文）。
 - [x] **阶段 4.2：V6.2 网关与打分（摘要）**
   - **智能音频网关**：`audio_preprocess` + `app.py` 大文件前置压缩后再 `transcribe_audio`。
-  - **量化扣分**：`RiskPoint.score_deduction` + `llm_judge` Prompt；**定向核实**：`session_notes` / 🎯 输入框注入 CONTEXT。
+  - **量化扣分**：`RiskPoint.score_deduction` + `llm_judge` Prompt；**定向核实**：结构化 **狙击清单**（`sniper_targets_json`）注入 CONTEXT。
 - [x] **阶段 4.3：V7.0 审查台本地草稿（`draft_manager` + `.drafts/`）与 QA/转写分池截断（`llm_judge`）**
 - [x] **阶段 4.4：V7.1 定向核实与切片掐头留尾；V7.2 `report_builder` 按索引物理覆写 `original_text`（防 QA 洗稿）+ `tests/test_v72_backend_override.py` 压测**
+- [x] **阶段 4.5：V7.5 专家共驾** — 说话人 ID / 按人可读文字稿；流水线与锁定 JSON **覆写 `original_text`**；LLM **`max_tokens` + 截断 JSON 抢救**；**`st.data_editor` 狙击清单**（`sniper_targets_json`）
 
 ## 四、 给 AI 助手 (Cursor) 的行为规范
 每次回答前，请仔细复习本文件。
@@ -38,7 +39,7 @@
 
 ## 🚀 v3.0 架构演进路线图 (Roadmap)
 
-**当前状态 (V7.2)**：在 V7.0 分池与草稿之上，已具备 **V7.1** 文字稿预提取、定向核实强锚定、**180s 保留末尾**切片；**V7.2** 在 `generate_html_report` 前 **`apply_asr_original_text_override`**，使 HTML「发言人口述实录」与 **ASR 词表 + 试听** 强制一致。`app.py` 侧 QA 合并默认 **`max_chars=30000`**。
+**当前状态 (V7.5)**：在 V7.0–V7.2 能力之上，已具备 **说话人区分与分段文字稿**、**结构化狙击清单**、流水线/锁定 **JSON 与 HTML 同源覆写 `original_text`**、**LLM 输出扩容与截断抢救**。`app.py` 侧 QA 合并默认 **`max_chars=30000`**。
 
 **产品提示（已实现/可配置）**：超大文档时应在业务侧拆分或提高截断阈值前评估 Token 与成本；侧边栏与 README 已强调「先 PDF/Word、非 PPT」等约束。
 

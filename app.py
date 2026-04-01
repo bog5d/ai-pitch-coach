@@ -1,6 +1,6 @@
 """
 AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
-发版主线 V7.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+发版主线 V7.5（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 
 支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
@@ -19,6 +19,8 @@ import sys
 import tempfile
 import threading
 import uuid
+
+import pandas as pd
 from pathlib import Path
 
 
@@ -63,9 +65,10 @@ from job_pipeline import (
     safe_fs_segment,
 )
 from sensitive_words import parse_sensitive_words
-from transcriber import transcribe_audio
+from transcriber import format_transcript_plain_by_speaker, transcribe_audio
 from report_builder import (
     HtmlExportOptions,
+    apply_asr_original_text_override,
     desensitize_text,
     generate_html_report,
     snippet_audio_mp3_bytes,
@@ -254,8 +257,12 @@ def _v3_finalize_stem(stem: str) -> Path:
     # 深拷贝后再校验；JSON 正文保持审查台明文，仅外发 HTML 文件名做 DLP 脱敏
     payload = copy.deepcopy(_v3_build_report_dict_from_widgets(stem))
     report = AnalysisReport.model_validate(payload)
+    words = [
+        TranscriptionWord.model_validate(x) for x in st.session_state[f"words_{stem}"]
+    ]
+    report_for_disk = apply_asr_original_text_override(report, words)
     Path(ctx["analysis_json"]).write_text(
-        json.dumps(report.model_dump(), ensure_ascii=False, indent=2),
+        json.dumps(report_for_disk.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     proj = (ctx.get("project_name") or "").strip() or "项目"
@@ -268,9 +275,6 @@ def _v3_finalize_stem(stem: str) -> Path:
     )
     html_path = Path(ctx["audio_path"]).parent / html_name
 
-    words = [
-        TranscriptionWord.model_validate(x) for x in st.session_state[f"words_{stem}"]
-    ]
     hopt = HtmlExportOptions(
         footer_watermark=ctx.get("watermark") or "",
         content_replace_map=ctx.get("html_mask_map") if ctx.get("mask_html_body") else None,
@@ -279,7 +283,7 @@ def _v3_finalize_stem(stem: str) -> Path:
     generate_html_report(
         Path(ctx["audio_path"]),
         words,
-        report,
+        report_for_disk,
         html_path,
         export_options=hopt,
     )
@@ -526,6 +530,23 @@ def _v3_render_review_workbench() -> None:
                 _v3_render_single_stem_review(stem)
 
 
+def _batch_sniper_targets_json(idx: int) -> str:
+    """将 data_editor 绑定在 session_state 中的狙击表序列化为 JSON（quote/reason）。"""
+    ed_key = f"batch_sniper_editor_{idx}"
+    df = st.session_state.get(ed_key)
+    if df is None:
+        return "[]"
+    if not hasattr(df, "iterrows"):
+        return "[]"
+    rows_out: list[dict[str, str]] = []
+    for _, row in df.iterrows():
+        q = str(row.get("原文引用", "") or "").strip()
+        r = str(row.get("人工疑点", "") or "").strip()
+        if q or r:
+            rows_out.append({"quote": q, "reason": r})
+    return json.dumps(rows_out, ensure_ascii=False)
+
+
 def _v71_transcribe_upload_to_plain(uf) -> str:
     """仅转写上传文件为可读纯文本（与主流程一致：≥10MB 先走智能压缩网关）。"""
     raw = uf.getvalue()
@@ -551,8 +572,7 @@ def _v71_transcribe_upload_to_plain(uf) -> str:
                 paths.remove(work)
                 work = p2
         words = transcribe_audio(work, out_json_path=None)
-        parts = [(w.text or "").strip() for w in words if (w.text or "").strip()]
-        return " ".join(parts)
+        return format_transcript_plain_by_speaker(words)
     finally:
         for p in paths:
             try:
@@ -915,43 +935,54 @@ def main() -> None:
     if uploaded_list:
         st.subheader("逐录音填写（进入 AI 上下文）")
         st.checkbox(
-            "根据录音文件名自动填写被访谈人与备注",
+            "根据录音文件名自动填写被访谈人与狙击表首行疑点",
             value=True,
             key="batch_autofill_filename",
             help=(
-                "按常见命名「机构-姓名」与可选末尾 8 位日期解析；更换本行对应录音文件名后会按新文件名重新覆盖这两项。"
-                "关闭后仅手动填写。"
+                "按常见命名「机构-姓名」与可选末尾 8 位日期解析；更换本行对应录音文件名后会按新文件名重新覆盖被访谈人，"
+                "并将解析到的备注写入该条「人工疑点」列首行。关闭后仅手动填写。"
             ),
         )
         st.caption(
-            "调整音频顺序或增删文件后，请逐条核对被访谈人、备注与 QA 是否与录音一致。"
+            "调整音频顺序或增删文件后，请逐条核对被访谈人、狙击清单与 QA 是否与录音一致。"
         )
         for idx, uf in enumerate(uploaded_list):
             stem = stem_from_audio_filename(uf.name)
             track_key = f"_batch_audio_stem_{idx}"
+            ed_key = f"batch_sniper_editor_{idx}"
+            if ed_key not in st.session_state:
+                st.session_state[ed_key] = pd.DataFrame(
+                    [{"原文引用": "", "人工疑点": ""}]
+                )
             if st.session_state.get("batch_autofill_filename", True):
                 if st.session_state.get(track_key) != stem:
                     st.session_state[track_key] = stem
                     iv_guess, note_guess = guess_batch_fields_from_stem(stem)
                     st.session_state[f"batch_iv_{idx}"] = iv_guess
-                    st.session_state[f"batch_note_{idx}"] = note_guess
+                    st.session_state[ed_key] = pd.DataFrame(
+                        [{"原文引用": "", "人工疑点": note_guess}]
+                    )
 
             st.markdown(f"**文件 {idx + 1}：** `{uf.name}`")
-            c_iv, c_note = st.columns(2)
-            with c_iv:
-                st.text_input(
-                    "被访谈人（必填）",
-                    key=f"batch_iv_{idx}",
-                    placeholder="本段录音对应的对象",
-                    help="仅作用于当前这一条录音的打分与复盘。",
-                )
-            with c_note:
-                st.text_input(
-                    "🎯 重点关注与定向核实（可选）",
-                    key=f"batch_note_{idx}",
-                    placeholder="例如：X总提到A口径，请重点核实是否与外部B口径一致并截取音频",
-                    help="写入 AI 上下文本段，作为定向核实与重点关注指令注入 Prompt。",
-                )
+            st.text_input(
+                "被访谈人（必填）",
+                key=f"batch_iv_{idx}",
+                placeholder="本段录音对应的对象",
+                help="仅作用于当前这一条录音的打分与复盘。",
+            )
+            st.caption(
+                "🎯 **结构化狙击清单**（绑定会话状态，重跑不丢）：「原文引用」贴原话，「人工疑点」写找茬方向；可多行。"
+            )
+            st.data_editor(
+                st.session_state[ed_key],
+                column_config={
+                    "原文引用": st.column_config.TextColumn("原文引用", width="large"),
+                    "人工疑点": st.column_config.TextColumn("人工疑点", width="large"),
+                },
+                num_rows="dynamic",
+                key=ed_key,
+                hide_index=True,
+            )
             suf = _qa_uploader_key_suffix(uf.name)
             qf = st.file_uploader(
                 "本段参考 QA（可选，可多选）",
@@ -990,16 +1021,16 @@ def main() -> None:
                 with st.spinner("正在转写，请稍候…"):
                     plain = _v71_transcribe_upload_to_plain(uf0)
                 st.session_state["v71_plain_body"] = plain
-                st.success(f"已提取约 {len(plain)} 字，可复制到「🎯 重点关注与定向核实」。")
+                st.success(f"已提取约 {len(plain)} 字，可复制到上方对应录音的「原文引用」列。")
             except Exception as ex:
                 logging.getLogger("ai_pitch_coach.ui").exception("仅提取文字稿失败")
                 st.error(f"转写失败：{ex!s}")
 
     st.text_area(
-        "提取的文字稿（可复制到上方逐录音「🎯 重点关注与定向核实」）",
+        "提取的文字稿（可复制到上方逐录音「原文引用」列）",
         key="v71_plain_body",
         height=280,
-        help="先点击上方按钮；将 ASR 原话粘贴到定向核实框可显著降低切片错位。",
+        help="先点击上方按钮；按说话人分段的文字可粘贴到狙击清单「原文引用」列以降低切片错位。",
     )
 
     run = st.button(
@@ -1158,13 +1189,14 @@ def main() -> None:
                     )
 
                     per_iv = (st.session_state.get(f"batch_iv_{i}") or "").strip()
-                    per_note = (st.session_state.get(f"batch_note_{i}") or "").strip()
+                    sniper_json = _batch_sniper_targets_json(i)
 
                     explicit_context = build_explicit_context(
                         category,
                         project_name,
                         per_iv,
-                        session_notes=per_note,
+                        session_notes="",
+                        sniper_targets_json=sniper_json,
                         recording_label=fname,
                         custom_roles_other=custom_roles,
                     )

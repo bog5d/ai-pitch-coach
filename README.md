@@ -27,13 +27,13 @@
 | **阿里云大模型极速转写** | 百炼 DashScope 兼容链路 + 多引擎兜底，输出 **词级时间戳** 转写 |
 | **DeepSeek 毒舌对齐分析** | 结构化打分与「找茬」点评，显式业务上下文 + QA 注入 |
 | **按录音 QA** | 每条录音在界面中 **单独上传参考 QA**（可选；多文件合并后截断 **30k**）；1 条或多条音频同一套流程 |
-| **文件名预填** | 支持按 **`机构-姓名`** 与可选末尾 **`YYYYMMDD`** 从录音主文件名预填 **被访谈人** 与 **本段备注**（可关） |
+| **文件名预填** | 支持按 **`机构-姓名`** 与可选末尾 **`YYYYMMDD`** 从录音主文件名预填 **被访谈人** 与 **狙击表首行疑点**（可关） |
 | **非对称音频切割** | 按词索引锚定切片，非对称缓冲（起止留白可配），报告内嵌 **Base64 音频** |
 | **外发合规（HTML）** | 文件名脱敏；可选 **正文同规则替换**；**页脚水印**；`*_analysis_report.json` 默认保留完整原文供内部分析 |
 | **V3.0 人机协同审查台** | 首轮流水线 **只出初稿 JSON**（不写最终 HTML）；主界面 **【报告审查与人工编辑台】** 从 `st.session_state` 编辑评语/扣分理由、删改翻车片段、人工增补复盘点；点 **【确认无误，锁定并生成最终版 HTML】** 后才覆盖写入 `*_analysis_report.json` 并调用 `report_builder.generate_html_report` |
-| **V6.2 体验升级** | **大文件/视频**：≥10MB 可走智能音频网关（抽轨 + 降采样）再送转写；`.streamlit/config.toml` 将单文件上传上限提升至 **1GB**（随纯净包分发）。**打分**：逐项 `score_deduction` 自下而上扣分算总分。**定向核实**：**🎯 重点关注与定向核实** 写入 Prompt。 |
+| **V6.2 体验升级** | **大文件/视频**：≥10MB 可走智能音频网关（抽轨 + 降采样）再送转写；`.streamlit/config.toml` 将单文件上传上限提升至 **1GB**（随纯净包分发）。**打分**：逐项 `score_deduction` 自下而上扣分算总分。**定向核实**：结构化 **狙击清单**（原文引用 + 人工疑点）写入 Prompt。 |
 | **V7.0 深度护航** | **审查台草稿**：`.drafts/` 原子落盘、侧栏 **恢复上次未完成草稿**、审查区静默自动保存。**QA**：独立字数池 + 超长资料头尾智能截取，**黄字**提示业务侧。 |
-| **V7.1 / V7.2 切片与实录** | **仅提取文字稿**（复制 ASR 填 🎯 定向核实）、定向核实 **字面锚定**、超长切片 **保留末尾 180s**。**V7.2**：HTML 导出前 **`original_text` 按词索引后端物理覆写**，杜绝 QA 洗稿混入「发言人口述实录」。说明见 **`V7.2_新功能与体验大升级.txt`**（及 `V7.0_…` / `V6.2_…`，随 `build_release.py` 白名单）。 |
+| **V7.1–V7.5 切片、实录与共驾** | **仅提取文字稿**（按说话人分段，复制到「原文引用」列）、**字面锚定**、超长切片 **保留末尾 180s**。**V7.2+**：流水线与锁定落盘的 `*_analysis_report.json` 均在写盘前 **`apply_asr_original_text_override`**，与 HTML 一致。**V7.5**：ASR **说话人 ID**、`max_tokens` 扩容、JSON **截断抢救**、**`st.data_editor` 狙击清单**（会话绑定）。说明见 **`V7.5_新功能与体验大升级.txt`**（及 `V7.2_…` / `V7.0_…` / `V6.2_…`，随 `build_release.py` 白名单）。 |
 
 ---
 
@@ -95,7 +95,7 @@ streamlit run app.py
 python build_release.py
 ```
 
-生成目录：**`AI路演教练_纯净交付版_{版本}/`**（版本号由 `build_release.py` 的 `CURRENT_VERSION` 决定，当前为 **`AI路演教练_纯净交付版_V7.2/`**）— 可直接拷贝至 U 盘分发；同事双击 BAT 即可完成依赖安装与启动。包内附带 **`V7.2_新功能与体验大升级.txt`**、`V7.0_…`、`V6.2_…` 等业务说明（若已列入白名单）。
+生成目录：**`AI路演教练_纯净交付版_{版本}/`**（版本号由 `build_release.py` 的 `CURRENT_VERSION` 决定，当前为 **`AI路演教练_纯净交付版_V7.5/`**）— 可直接拷贝至 U 盘分发；同事双击 BAT 即可完成依赖安装与启动。包内附带 **`V7.5_新功能与体验大升级.txt`**、`V7.2_…`、`V7.0_…`、`V6.2_…` 等业务说明（若已列入白名单）。
 
 > 更细的操作说明见根目录 **`小白保姆级操作手册.md`**（若随仓分发）。
 
@@ -109,16 +109,16 @@ python build_release.py
 
 - **Pipeline + Pydantic 契约**（`src/schema.py`），拒绝不可控 Agent 编排  
 - **词级索引** 驱动音频切割，避免全文模糊匹配  
-- 详细设计见 **`PROJECT_PLAN.md`**；**V3.1–V7.2 数据流**（含草稿、QA 分池、定向核实、**实录物理覆写**、日志/GC/退避）见 **`ARCHITECTURE.md`**
+- 详细设计见 **`PROJECT_PLAN.md`**；**V3.1–V7.5 数据流**（含草稿、QA 分池、狙击清单、**实录物理覆写**、日志/GC/退避）见 **`ARCHITECTURE.md`**
 
 ### V3.0 接手速查（Human-in-the-Loop）
 
 | 主题 | 说明 |
 | :--- | :--- |
-| **数据契约** | `AnalysisReport` 含 `total_score_deduction_reason`；每条 `RiskPoint` 含 **`score_deduction`**（V6.2 量化扣分，延续至今）、`original_text`（**V7.2** HTML 导出前由 `report_builder` 按索引覆写）、`deduction_reason`、`is_manual_entry`。见 `src/schema.py`。 |
+| **数据契约** | `AnalysisReport` 含 `total_score_deduction_reason`；每条 `RiskPoint` 含 **`score_deduction`**（V6.2 量化扣分，延续至今）、`original_text`（**V7.2+** 流水线与锁定前由 `apply_asr_original_text_override` 按索引覆写）、`deduction_reason`、`is_manual_entry`。见 `src/schema.py`。 |
 | **LLM** | `src/llm_judge.py` 要求模型输出扣分原因并与 QA 口径对齐说明。 |
 | **流水线** | `run_pitch_file_job(..., skip_html_export=True)` 时仍写 `*_analysis_report.json` 初稿，但 **不** 生成 HTML；返回 `(words, report)` 供 UI 注入状态。见 `src/job_pipeline.py`。 |
-| **Streamlit** | 每录音 `stem`：`report_draft_{stem}`、`words_{stem}`、`v3_ctx_{stem}`、`v3_review_stems`。**V7.0** 草稿静默保存与恢复；**V7.1**「仅提取文字稿」；未点「开始生成」时若仍有 `v3_review_stems`，会 **继续展示审查台**。见 `app.py`。 |
+| **Streamlit** | 每录音 `stem`：`report_draft_{stem}`、`words_{stem}`、`v3_ctx_{stem}`、`v3_review_stems`。**V7.0** 草稿静默保存与恢复；**V7.1**「仅提取文字稿」；**V7.5** 狙击清单 `batch_sniper_editor_{idx}`；未点「开始生成」时若仍有 `v3_review_stems`，会 **继续展示审查台**。见 `app.py`。 |
 | **定稿** | 仅用户点击锁定后：`app.py` 将当前 `session_state` 写回 `*_analysis_report.json` 并调用 `src/report_builder.generate_html_report`。逐字稿与切片见 `format_transcript_snippet` / `snippet_audio_mp3_bytes`。 |
 
 ---
@@ -128,7 +128,7 @@ python build_release.py
 | 路径 | 说明 |
 | :--- | :--- |
 | `app.py` | Streamlit 企业控制台（V3.0 审查台状态 + 锁定导出；业务编排见 `src/job_pipeline.py`） |
-| `src/` | 转写、打分、报告拼装（**V7.2 实录覆写**）、文档读取、`draft_manager`、`job_pipeline` 等 |
+| `src/` | 转写、打分、报告拼装（**V7.5 实录覆写 + 共驾加固**）、文档读取、`draft_manager`、`job_pipeline` 等 |
 | `tests/` | 测试与黄金数据（大文件见 `.gitignore`） |
 | `build_release.py` | 纯净交付包打包脚本 |
 | `run_exe.py` / `PACKAGING_EXE.md` | EXE 启动器与 PyInstaller 说明 |

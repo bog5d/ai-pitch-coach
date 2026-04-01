@@ -1,4 +1,4 @@
-"""audio_preprocess.smart_compress_media 轻量单测（小文件免压）。仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。"""
+"""audio_preprocess.smart_compress_media 轻量单测（小文件免压）。仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。"""
 from __future__ import annotations
 
 import sys

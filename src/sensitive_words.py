@@ -1,4 +1,4 @@
-"""敏感词解析：宽松分隔符 + 去重（保序），供侧边栏与流水线共用。仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。"""
+"""敏感词解析：宽松分隔符 + 去重（保序），供侧边栏与流水线共用。仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。"""
 from __future__ import annotations
 
 import re

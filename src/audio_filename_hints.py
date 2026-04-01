@@ -1,6 +1,6 @@
 """
 从音频主文件名推断批量模式下的被访谈人与备注（机构-姓名[YYYYMMDD] 等常见命名）。
-仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。
 """
 from __future__ import annotations
 

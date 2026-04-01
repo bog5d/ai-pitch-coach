@@ -1,4 +1,4 @@
-"""sensitive_words.parse_sensitive_words 单元测试。仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。"""
+"""sensitive_words.parse_sensitive_words 单元测试。仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。"""
 from __future__ import annotations
 
 import sys

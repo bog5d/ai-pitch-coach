@@ -1,8 +1,8 @@
 # 依赖：pip install openai python-dotenv pydantic
 """
 LLM 逻辑打分模块 2.0：三巨头模型路由（DeepSeek / Kimi / Qwen-Max）+ AnalysisReport 契约。
-仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐；含量化扣分引擎与定向狙击 Prompt）。
-V7.2：场记式 original_text 约束（禁抄 QA）；沿用 V7.0 起转写/QA 分池与超长截断。
+仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。
+V7.5：max_tokens 扩容、截断 JSON 抢救、结构化狙击清单；沿用转写/QA 分池与超长截断。
 支持显式业务上下文与 QA 知识库注入，结构化防幻觉 Prompt。
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ from openai import APIError, OpenAI
 from pydantic import ValidationError
 
 from retry_policy import run_with_backoff
-from schema import AnalysisReport, TranscriptionWord
+from schema import AnalysisReport, RiskPoint, SceneAnalysis, TranscriptionWord
 from runtime_paths import get_writable_app_root
 
 # ---------------------------------------------------------------------------
@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 # V7.0：录音转写与 QA 补充材料字数池物理隔离
 MAX_TRANSCRIPT_CHARS = 80_000
 MAX_QA_CHARS = 30_000
+
+# OpenAI 兼容接口 completion 上限（按模型典型能力设安全值，避免默认过小导致 JSON 拦腰截断）
+MAX_COMPLETION_TOKENS_BY_MODEL: dict[str, int] = {
+    "deepseek-chat": 8192,
+    "moonshot-v1-32k": 8192,
+    "qwen-max": 8192,
+}
 
 MIDDLE_OMIT_MARK = "\n...[内容过长，系统已智能省略中间部分]...\n"
 
@@ -118,6 +125,98 @@ def choose_model_with_timeout(timeout: float = 3) -> str:
         return "deepseek"
 
 
+def _recover_risk_point_dicts_from_truncated_json(raw: str) -> list[dict[str, Any]] | None:
+    """
+    在整段响应非法 JSON 时，定位 risk_points 数组，用 JSONDecoder.raw_decode
+    顺序解析其中每一个完整对象，丢弃末尾未完成碎片（非正则拼接）。
+    """
+    marker = '"risk_points"'
+    mi = raw.find(marker)
+    if mi < 0:
+        return None
+    lb = raw.find("[", mi)
+    if lb < 0:
+        return None
+    decoder = json.JSONDecoder()
+    pos = lb + 1
+    n = len(raw)
+    items: list[dict[str, Any]] = []
+    while pos < n:
+        while pos < n and raw[pos] in " \t\n\r,":
+            pos += 1
+        if pos >= n or raw[pos] == "]":
+            break
+        try:
+            obj, end = decoder.raw_decode(raw, pos)
+            if isinstance(obj, dict):
+                items.append(obj)
+            pos = end
+        except json.JSONDecodeError:
+            break
+    return items or None
+
+
+def _salvage_analysis_report_from_truncated_json(raw: str) -> AnalysisReport | None:
+    dicts = _recover_risk_point_dicts_from_truncated_json(raw)
+    if not dicts:
+        return None
+    risks: list[RiskPoint] = []
+    for d in dicts:
+        try:
+            risks.append(RiskPoint.model_validate(d))
+        except ValidationError:
+            continue
+    if not risks:
+        return None
+    total_ded = sum(int(r.score_deduction or 0) for r in risks)
+    total_ded = min(100, max(0, total_ded))
+    score = max(0, min(100, 100 - total_ded))
+    return AnalysisReport(
+        scene_analysis=SceneAnalysis(
+            scene_type="（模型 JSON 被 API 截断，已抢救部分风险点）",
+            speaker_roles="请结合录音与审查台人工复核",
+        ),
+        total_score=score,
+        total_score_deduction_reason=(
+            "（输出被长度截断，系统已丢弃未完成片段；建议缩短上下文或重试）"
+        ),
+        risk_points=risks,
+    )
+
+
+def _validation_suggests_truncated_json(e: ValidationError) -> bool:
+    for err in e.errors():
+        if err.get("type") == "json_invalid":
+            ctx = err.get("ctx") or {}
+            je = ctx.get("error")
+            if je is not None:
+                m = str(je).lower()
+                if "eof" in m or "unterminated" in m or "delimiter" in m:
+                    return True
+    msg = str(e).lower()
+    return "eof" in msg or "invalid json" in msg
+
+
+def _format_sniper_block(sniper_json: str) -> str:
+    try:
+        data = json.loads(sniper_json)
+    except json.JSONDecodeError:
+        return "（狙击清单 JSON 无法解析，已忽略）"
+    if not isinstance(data, list):
+        return "（无主理人结构化狙击清单）"
+    rows: list[dict[str, str]] = []
+    for x in data:
+        if not isinstance(x, dict):
+            continue
+        q = str(x.get("quote", "") or "").strip()
+        r = str(x.get("reason", "") or "").strip()
+        if q or r:
+            rows.append({"quote": q, "reason": r})
+    if not rows:
+        return "（无主理人结构化狙击清单）"
+    return json.dumps(rows, ensure_ascii=False, indent=2)
+
+
 def format_transcript_for_llm(words: List[TranscriptionWord]) -> str:
     """[0]词 [1]词 ..."""
     if not words:
@@ -134,12 +233,14 @@ def _normalize_explicit_context(explicit_context: dict[str, Any] | None) -> dict
     base = explicit_context or {}
     notes = str(base.get("session_notes") or "").strip()
     rec = str(base.get("recording_label") or "").strip()
+    sj = str(base.get("sniper_targets_json") or "").strip() or "[]"
     return {
         "biz_type": str(base.get("biz_type") or "未指定"),
         "exact_roles": str(base.get("exact_roles") or "未指定"),
         "project_name": str(base.get("project_name") or "未指定"),
         "interviewee": str(base.get("interviewee") or "未指定"),
         "session_notes": notes if notes else "无",
+        "sniper_targets_json": sj,
         "recording_label": rec if rec else "未指定",
     }
 
@@ -152,6 +253,7 @@ def _build_system_prompt(
     ctx = _normalize_explicit_context(explicit_context)
     kb = (qa_text or "").strip()
     kb_block = kb if kb else "未提供参考QA知识库。"
+    sniper_block = _format_sniper_block(ctx["sniper_targets_json"])
 
     return f"""你是一位拥有15年一线投行经验的「顶级金牌路演教练」。你的唯一服务对象是【被访谈对象/路演发言人】。你正在复盘带有词级索引 [index] 的录音逐字稿，目的是帮助发言人提升话术应对能力。
 <CONTEXT>
@@ -160,7 +262,9 @@ def _build_system_prompt(
 当前投资机构/项目名称：{ctx["project_name"]}
 被访谈对象（标识）：{ctx["interviewee"]}
 当前录音文件标识：{ctx["recording_label"]}
-🎯 主理人重点关注/定向核实指令：{ctx["session_notes"]}
+🎯 主理人【结构化狙击清单】（JSON 数组，每项含 quote=原文引用、reason=人工疑点；优先级高于一切自由文本备注）：
+{sniper_block}
+其它自由备注（补充）：{ctx["session_notes"]}
 </CONTEXT>
 <KNOWLEDGE_BASE>
 {kb_block}
@@ -170,9 +274,10 @@ def _build_system_prompt(
 - **核心纪律**：投资人通常是「抛出压力、质疑、要求数据验证」的一方；发言人通常是「解释业务、回答追问、组织逻辑应对」的一方。
 - **严禁将投资人的质询、措辞或口误，判定为发言人的问题来写 Tier 改进建议；板子绝对不能打错人！** 找茬与 improvement_suggestion 必须 100% 锚定在【发言人】的实际应答上。
 2【实战复盘与话术重构】：找出被尽调方在回答中的避重就轻、逻辑漏洞或数据打架。指出问题后，你必须指导他们如何完美应对！
-3【定向狙击指令】：如果 <CONTEXT> 中提供了「🎯 主理人重点关注指令」（且内容不是占位「无」），你必须将其作为最高优先级！在录音中像侦探一样精准定位与该指令相关的对话，单独提取为一个 RiskPoint，进行核实、对比并给出明确结论！
-   - **字面量防脱轨（强制）**：若主理人提供了定向核实内容（尤其是带引号、或粘贴的**原话片段**），你必须在下方 user 消息中带 **[index]** 的转写稿中进行**严格的字面量匹配**——先在转写中定位与指令文字**完全一致或逐字包含**的片段，再仅在该匹配位置附近选取 `start_word_index` / `end_word_index`。**严禁**在未出现相同或高度一致措辞的情况下，凭猜测把索引圈到无关段落。
-   - **定向核实专用扩窗纪律（强制）**：对于上述因「🎯 定向核实」而单独提取的 RiskPoint，**严禁**像普通翻车点那样盲目向外大幅扩展边界！只允许圈定**该原话所在的当前问答回合**（一问一答或紧密衔接的短轮次），使 `start_word_index` 至 `end_word_index` 在时间上**严格压制在约 60 秒以内**，**严禁**制造跨越超长沉默或无关闲聊的巨大时间跨度。
+3【结构化狙击清单（最高优先级）】：若 <CONTEXT> 中 JSON 狙击清单非空，这是主理人下达的**逐条作战任务**。你必须对**清单中的每一条**（每个 quote + reason 配对）进行 **1 对 1 的深度定向分析**：在下方 user 转写稿中用 **[index]** 做字面锚定，为每一对至少对应一个 RiskPoint（可合并极短重复项，但不可漏项）；reason 即「找茬方向」，必须在该 RiskPoint 的 tier 剖析与 deduction_reason 中明确回应。
+   - **字面量防脱轨（强制）**：每个 quote 须在转写中找到**完全一致或逐字包含**的锚点后再选取 `start_word_index` / `end_word_index`；**严禁**无锚点瞎猜。
+   - **定向核实专用扩窗纪律（强制）**：针对上述狙击清单产生的 RiskPoint，**严禁**盲目超长扩窗；仅允许覆盖**该原话所在当前问答回合**，`start_word_index` 至 `end_word_index` 时间上**压制在约 60 秒内**。
+   - 若狙击清单为空且仅有自由备注，则退化为原「定向核实」逻辑：备注非占位「无」时仍须单独提取 RiskPoint 并遵守上述锚定与 60 秒纪律。
 </TASK>
 <SCORING_RULE>
 【量化扣分引擎（极度重要）】：
@@ -198,7 +303,7 @@ def _build_system_prompt(
 - 不要盲目圈定超长对话。以「直击痛点」为原则，将 `start_word_index` 与 `end_word_index` 所覆盖的交锋时长（按词级起止时间理解）引导在 **45–60 秒**左右。
 - **截取艺术**：建议包含【问题最尖锐的末尾约 10 秒】+【回答最核心的约 40–50 秒】。若 Q&A 确实漫长且精彩，允许适度放宽，但 **绝对禁止超过 180 秒的无信息量无效圈地**；系统侧会对物理音频硬截断至 180 秒，过度圈地只会丢失后半段听感。
 
-【二、绝对忠实的场记模式】：在输出 `original_text` 时，你必须扮演一台毫无感情的复读机！100% 原样摘录带有 [index] 的真实转写稿，保留所有的结巴、语气词（嗯、啊）。绝对禁止任何书面化润色，绝对禁止混入 <KNOWLEDGE_BASE> 的标准答案进行伪造！
+【二、场记与索引纪律】：`original_text` 在落盘时由系统按 ASR 词索引**物理覆写**，你仍须输出与 `start_word_index`–`end_word_index` 范围一致的摘录；可带 [index] 以利对齐。禁止书面化润色、禁止抄 QA 冒充实录。
 
 【三、扣分说明与索引边界（强制）】：
 - 根级字段 total_score_deduction_reason：结合总分与 <KNOWLEDGE_BASE>，说明主要扣分维度与依据。
@@ -214,7 +319,7 @@ def _build_system_prompt(
 <FINAL_REMINDER>
 【最后重申你的核心纪律（至关重要）】：
 1. 必须绝对站在发言人视角给话术，严禁当投资人的军师！
-2. `original_text` 必须场记式复读 user 转写，禁止润色、禁止抄 QA；后端仍会按索引强制覆写，但你须输出与索引范围一致的逐词摘录以利排障。
+2. `original_text` 须与索引范围一致；后端按 ASR 强制覆写落盘，禁止抄 QA。
 3. 必须严格执行量化扣分引擎：每个 risk_points[] 填写 score_deduction，且 total_score = 100 - Σscore_deduction！
 4. 话术建议坚守合规底线，严禁过度承诺！
 </FINAL_REMINDER>
@@ -296,6 +401,8 @@ def evaluate_pitch(
 
     t_api0 = time.monotonic()
 
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
+
     def _chat_once():
         return client.chat.completions.create(
             model=model_name,
@@ -305,6 +412,7 @@ def evaluate_pitch(
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
+            max_tokens=max_tokens,
         )
 
     try:
@@ -336,6 +444,14 @@ def evaluate_pitch(
     try:
         return AnalysisReport.model_validate_json(raw_json)
     except ValidationError as e:
+        if _validation_suggests_truncated_json(e):
+            salvaged = _salvage_analysis_report_from_truncated_json(raw_json)
+            if salvaged is not None:
+                logger.warning(
+                    "LLM JSON 疑似截断，已用 risk_points 增量解析抢救 %d 条",
+                    len(salvaged.risk_points),
+                )
+                return salvaged
         logger.error("AnalysisReport 校验失败: %s\n原始片段: %s", e, raw_json[:2000])
         raise ValueError(f"模型输出不符合 AnalysisReport 契约: {e}") from e
 
@@ -390,6 +506,7 @@ if __name__ == "__main__":
         "project_name": "未指定",
         "interviewee": "未指定",
         "session_notes": "无",
+        "sniper_targets_json": "[]",
         "recording_label": "未指定",
     }
 

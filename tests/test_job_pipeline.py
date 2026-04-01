@@ -1,6 +1,6 @@
 """
 job_pipeline 纯函数与上下文契约（不调用外网 API）。
-仓库发版 V7.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+仓库发版 V7.5（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 运行：python tests/test_job_pipeline.py
 """
 from __future__ import annotations
@@ -31,6 +31,7 @@ class TestJobPipeline(unittest.TestCase):
             custom_roles_other="采购总监 vs 买方基金",
         )
         self.assertEqual(ctx["exact_roles"], "采购总监 vs 买方基金")
+        self.assertEqual(ctx.get("sniper_targets_json"), "[]")
 
     def test_apply_html_filename_masks_long_key_first(self) -> None:
         m = {"迪策资本": "DC", "资本": "X"}

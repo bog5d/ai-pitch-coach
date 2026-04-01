@@ -2,7 +2,7 @@
 # （阿里云兜底走 REST，无需 dashscope；pydantic 供 schema 使用）
 """
 真实语音转写模块：硅基流动（主） + 阿里云 DashScope Paraformer（备）。
-仓库发版 V7.2（与 build_release.CURRENT_VERSION 对齐）。
+仓库发版 V7.5（与 build_release.CURRENT_VERSION 对齐）。
 严格产出带词级时间戳的 TranscriptionWord 列表，供流水线后续切割使用。
 入口 `audio_path` 可由上层在 ASR 前经 audio_preprocess.smart_compress_media 预处理（大文件网关 MP3 等）。
 （敏感词替换在转写完成之后由 job_pipeline.mask_words_for_llm 执行，词表经 sensitive_words.parse_sensitive_words 解析并按词长排序后传入。）
@@ -16,7 +16,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 from urllib import request as urllib_request
 
 import requests
@@ -157,21 +157,77 @@ def _siliconflow_word_has_times(w: dict[str, Any]) -> bool:
     return _coerce_seconds_pair(w) is not None
 
 
+def _speaker_id_from_vendor_word(
+    w: dict[str, Any], sentence: dict[str, Any] | None = None
+) -> str | None:
+    """优先用词级字段，其次句级；返回 None 表示厂商未提供说话人。"""
+    for src in (w, sentence):
+        if not isinstance(src, dict):
+            continue
+        for key in (
+            "speaker_id",
+            "speaker",
+            "spk_id",
+            "spk",
+            "channel_id",
+            "speaker_label",
+        ):
+            if key not in src:
+                continue
+            val = src.get(key)
+            if val is None:
+                continue
+            s = str(val).strip()
+            if s:
+                return s
+    return None
+
+
+def _assign_auto_speaker_ids(raw_speaker_labels: list[str | None]) -> list[str]:
+    """
+    将 None 替换为 auto_spk_0, auto_spk_1, …（按「首次出现的占位」递增，同一段未知共用一个 id）。
+    """
+    out: list[str] = []
+    next_auto = 0
+    anon_slot: str | None = None
+    for lab in raw_speaker_labels:
+        if lab:
+            anon_slot = None
+            out.append(lab)
+            continue
+        if anon_slot is None:
+            anon_slot = f"auto_spk_{next_auto}"
+            next_auto += 1
+        out.append(anon_slot)
+    return out
+
+
 def _map_siliconflow_to_schema(raw_words: list[dict[str, Any]]) -> List[TranscriptionWord]:
+    raw_labels: list[str | None] = []
+    for w in raw_words:
+        pair = _coerce_seconds_pair(w)
+        if pair is None:
+            continue
+        raw_labels.append(_speaker_id_from_vendor_word(w, None))
+
+    speaker_ids = _assign_auto_speaker_ids(raw_labels)
     out: List[TranscriptionWord] = []
+    si = 0
     for w in raw_words:
         pair = _coerce_seconds_pair(w)
         if pair is None:
             continue
         t0, t1 = pair
         text = str(w.get("word") or w.get("text") or w.get("token") or "").strip()
+        sid = speaker_ids[si]
+        si += 1
         out.append(
             TranscriptionWord(
                 word_index=len(out),
                 text=text or "(空)",
                 start_time=t0,
                 end_time=t1,
-                speaker_id="未知",
+                speaker_id=sid,
             )
         )
     return out
@@ -290,8 +346,7 @@ def _map_aliyun_paraformer_to_schema(result: dict[str, Any]) -> List[Transcripti
     if not isinstance(transcripts, list):
         raise ValueError("阿里云识别结果缺少 transcripts")
 
-    out: List[TranscriptionWord] = []
-    idx = 0
+    raw_rows: list[tuple[float, float, str, str | None]] = []
     for tr in transcripts:
         if not isinstance(tr, dict):
             continue
@@ -312,16 +367,23 @@ def _map_aliyun_paraformer_to_schema(result: dict[str, Any]) -> List[Transcripti
                 if bt is None or et is None:
                     continue
                 text = str(w.get("text") or "").strip()
-                out.append(
-                    TranscriptionWord(
-                        word_index=idx,
-                        text=text or "(空)",
-                        start_time=float(bt) / 1000.0,
-                        end_time=float(et) / 1000.0,
-                        speaker_id="未知",
-                    )
+                spk = _speaker_id_from_vendor_word(w, sent)
+                raw_rows.append(
+                    (float(bt) / 1000.0, float(et) / 1000.0, text or "(空)", spk)
                 )
-                idx += 1
+
+    speaker_ids = _assign_auto_speaker_ids([r[3] for r in raw_rows])
+    out: List[TranscriptionWord] = []
+    for i, (t0, t1, text, _) in enumerate(raw_rows):
+        out.append(
+            TranscriptionWord(
+                word_index=i,
+                text=text,
+                start_time=t0,
+                end_time=t1,
+                speaker_id=speaker_ids[i],
+            )
+        )
 
     if not out:
         raise ValueError("阿里云识别结果中未找到带 begin_time/end_time 的词级数组")
@@ -441,6 +503,46 @@ def transcribe_aliyun(file_path: str) -> List[TranscriptionWord]:
 
     result_json = _fetch_json_from_url(turl)
     return _map_aliyun_paraformer_to_schema(result_json)
+
+
+def _human_speaker_letter_label(ordinal: int) -> str:
+    if 0 <= ordinal < 26:
+        return f"Speaker {chr(65 + ordinal)}"
+    return f"Speaker {ordinal + 1}"
+
+
+def format_transcript_plain_by_speaker(words: List[TranscriptionWord]) -> str:
+    """
+    人类可读视图：按 speaker_id 聚类，同一段内词文本直接拼接（保留 ASR 标点），
+    段格式为 ``[Speaker A]: ...``，段与段之间空一行。
+    """
+    if not words:
+        return ""
+    ordered: list[str] = []
+    for w in words:
+        sid = (w.speaker_id or "").strip() or "auto_spk_0"
+        if sid not in ordered:
+            ordered.append(sid)
+    labels = {sid: _human_speaker_letter_label(i) for i, sid in enumerate(ordered)}
+
+    lines: list[str] = []
+    cur: str | None = None
+    buf: list[str] = []
+    for w in words:
+        t = (w.text or "").strip()
+        if not t or t == "(空)":
+            continue
+        sid = (w.speaker_id or "").strip() or "auto_spk_0"
+        if cur is not None and sid != cur:
+            label = labels.get(cur, cur)
+            lines.append(f"[{label}]: " + "".join(buf))
+            buf = []
+        cur = sid
+        buf.append(t)
+    if buf and cur is not None:
+        label = labels.get(cur, cur)
+        lines.append(f"[{label}]: " + "".join(buf))
+    return "\n\n".join(lines)
 
 
 def transcribe_audio(

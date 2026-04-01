@@ -1,6 +1,6 @@
 """
 单文件复盘编排：转写 → 敏感词打码 → LLM 打分 → JSON 落盘 → HTML 报告。
-仓库发版 V7.2（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+仓库发版 V7.5（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 Streamlit 可在调用本流水线前对大文件做音频网关压缩，再将 `audio_path` 指向网关产物。
 HTML 内嵌音频由 report_builder 调用 imageio_ffmpeg 定位的 ffmpeg 子进程切片（Base64 MP3，
 Windows 下隐藏控制台，失败时报告中降级为文字提示）。
@@ -16,7 +16,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from llm_judge import evaluate_pitch
-from report_builder import HtmlExportOptions, generate_html_report
+from report_builder import (
+    HtmlExportOptions,
+    apply_asr_original_text_override,
+    generate_html_report,
+)
 from schema import AnalysisReport, TranscriptionWord
 from transcriber import transcribe_audio
 
@@ -63,6 +67,7 @@ def build_explicit_context(
     interviewee: str,
     *,
     session_notes: str = "",
+    sniper_targets_json: str = "[]",
     recording_label: str = "",
     custom_roles_other: str = "",
 ) -> dict[str, str]:
@@ -70,12 +75,14 @@ def build_explicit_context(
         roles = (custom_roles_other or "").strip()
     else:
         roles = SCENE_MAP.get(category, "未指定")
+    sj = (sniper_targets_json or "").strip() or "[]"
     return {
         "biz_type": category,
         "exact_roles": roles or "未指定",
         "project_name": (project_name or "").strip() or "未指定",
         "interviewee": (interviewee or "").strip() or "未指定",
         "session_notes": (session_notes or "").strip(),
+        "sniper_targets_json": sj,
         "recording_label": (recording_label or "").strip(),
     }
 
@@ -155,16 +162,17 @@ def run_pitch_file_job(
         _line("✂️ AI 初稿已生成，等待人工审查台确认后再导出 HTML...")
     else:
         _line("✂️ 找茬完毕！正在疯狂裁剪原声音频，为您装订绝美复盘报告...")
+    report_for_disk = apply_asr_original_text_override(report, words)
     params.analysis_json_path.write_text(
-        json.dumps(report.model_dump(), ensure_ascii=False, indent=2),
+        json.dumps(report_for_disk.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     if not skip_html_export:
         generate_html_report(
             audio_path,
             words,
-            report,
+            report_for_disk,
             params.html_output_path,
             export_options=params.html_export_options,
         )
-    return words, report
+    return words, report_for_disk
