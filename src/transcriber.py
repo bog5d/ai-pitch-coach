@@ -233,10 +233,15 @@ def _map_siliconflow_to_schema(raw_words: list[dict[str, Any]]) -> List[Transcri
     return out
 
 
-def transcribe_siliconflow(file_path: str) -> List[TranscriptionWord]:
+def transcribe_siliconflow(
+    file_path: str,
+    *,
+    hot_words: list[str] | None = None,
+) -> List[TranscriptionWord]:
     """
     引擎 1：硅基流动 OpenAI 兼容 /v1/audio/transcriptions。
     要求 verbose_json + 词级时间戳；否则抛出 ValueError 以触发上层降级。
+    hot_words 非空时注入 initial_prompt 字段作为专有名词提示（最优努力，API 不支持时无副作用）。
     """
     api_key = os.getenv("SILICONFLOW_API_KEY")
     if not api_key:
@@ -257,6 +262,10 @@ def transcribe_siliconflow(file_path: str) -> List[TranscriptionWord]:
             ("response_format", (None, "verbose_json")),
             ("timestamp_granularities[]", (None, "word")),
         ]
+        if hot_words:
+            prompt_str = "，".join(str(w).strip() for w in hot_words if str(w).strip())
+            if prompt_str:
+                files.append(("initial_prompt", (None, prompt_str)))
         resp = _requests_post_with_retry(
             SILICONFLOW_TRANSCRIBE_URL,
             headers=headers,
@@ -410,6 +419,8 @@ def _dashscope_submit_transcription_rest(api_key: str, oss_url: str) -> str:
         "parameters": {
             "channel_id": [0],
             "language_hints": ["zh", "en"],
+            "enable_punctuation_prediction": True,
+            "disfluency_removal_enabled": True,
         },
     }
     r = _requests_post_with_retry(
@@ -460,10 +471,15 @@ def _dashscope_poll_task_rest(api_key: str, task_id: str) -> list[Any]:
     raise TimeoutError("阿里云转写等待超时（>3600s）")
 
 
-def transcribe_aliyun(file_path: str) -> List[TranscriptionWord]:
+def transcribe_aliyun(
+    file_path: str,
+    *,
+    hot_words: list[str] | None = None,
+) -> List[TranscriptionWord]:
     """
     引擎 2：百炼 Paraformer-v2 录音文件识别（纯 REST，不用 dashscope SDK）。
     本地文件 -> 临时 OSS (oss://) -> REST 提交（带 OssResourceResolve）-> 轮询 -> 下载 transcription_url JSON。
+    hot_words 当前在阿里云引擎侧暂不支持直接注入（需预创建 vocabulary），静默忽略。
     """
     api_key = os.getenv("DASHSCOPE_API_KEY")
     if not api_key:
@@ -505,16 +521,15 @@ def transcribe_aliyun(file_path: str) -> List[TranscriptionWord]:
     return _map_aliyun_paraformer_to_schema(result_json)
 
 
-def _human_speaker_letter_label(ordinal: int) -> str:
-    if 0 <= ordinal < 26:
-        return f"Speaker {chr(65 + ordinal)}"
-    return f"Speaker {ordinal + 1}"
+def _human_speaker_label_zh(ordinal_zero_based: int) -> str:
+    """按首次出现顺序编号：发言人 1、发言人 2…（与 LLM 用 [0][1] 词索引区分）。"""
+    return f"发言人 {ordinal_zero_based + 1}"
 
 
 def format_transcript_plain_by_speaker(words: List[TranscriptionWord]) -> str:
     """
     人类可读视图：按 speaker_id 聚类，同一段内词文本直接拼接（保留 ASR 标点），
-    段格式为 ``[Speaker A]: ...``，段与段之间空一行。
+    段格式为 ``[发言人 1]: ...``，段与段之间空一行；绝不输出词级 ``[0]`` 索引。
     """
     if not words:
         return ""
@@ -523,7 +538,7 @@ def format_transcript_plain_by_speaker(words: List[TranscriptionWord]) -> str:
         sid = (w.speaker_id or "").strip() or "auto_spk_0"
         if sid not in ordered:
             ordered.append(sid)
-    labels = {sid: _human_speaker_letter_label(i) for i, sid in enumerate(ordered)}
+    labels = {sid: _human_speaker_label_zh(i) for i, sid in enumerate(ordered)}
 
     lines: list[str] = []
     cur: str | None = None
@@ -549,21 +564,23 @@ def transcribe_audio(
     audio_path: str | Path,
     *,
     out_json_path: str | Path | None = None,
+    hot_words: list[str] | None = None,
 ) -> List[TranscriptionWord]:
     """
     双引擎调度：优先硅基流动；任意异常则打印警告并切换阿里云。
     返回词级转写列表；若提供 out_json_path 则额外写入 JSON（便于调试或归档）。
+    hot_words 非空时向 SiliconFlow 注入 initial_prompt 作为专有名词提示。
     """
     path_str = str(Path(audio_path).resolve())
     try:
-        words = transcribe_siliconflow(path_str)
+        words = transcribe_siliconflow(path_str, hot_words=hot_words)
     except Exception as e:
         logger.warning("硅基流动转写未成功，切换阿里云兜底: %s", e, exc_info=False)
         print(
             f"[transcriber] WARN: 硅基流动失败，已切换阿里云兜底。原因: {e}",
             file=sys.stderr,
         )
-        words = transcribe_aliyun(path_str)
+        words = transcribe_aliyun(path_str, hot_words=hot_words)
 
     if out_json_path is not None:
         out = Path(out_json_path)

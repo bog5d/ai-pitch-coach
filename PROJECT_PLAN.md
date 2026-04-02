@@ -31,11 +31,20 @@
 - [x] **阶段 4.4：V7.1 定向核实与切片掐头留尾；V7.2 `report_builder` 按索引物理覆写 `original_text`（防 QA 洗稿）+ `tests/test_v72_backend_override.py` 压测**
 - [x] **阶段 4.5：V7.5 专家共驾** — 说话人 ID / 按 **[发言人 N]** 可读文字稿（`format_transcript_plain_by_speaker`）；流水线与锁定 JSON **覆写 `original_text`**；LLM **`max_tokens` + 截断 JSON 抢救**（`salvage_*`，`tests/test_v75_json_salvage.py`）；**`st.data_editor` 狙击清单**列 **原文引用 / 找茬疑点**、会话绑定（`tests/test_v75_formatter.py` 等）；发版 **`python build_release.py`** → **`AI路演教练_纯净交付版_V7.5`**
 - [x] **阶段 4.6：V7.6 状态机解耦 · ASR 缓存 · 收官加固** 【COMPLETED 2026-04-02】
-  - **彻底修复 Streamlit `data_editor` 状态死锁**：双 Key 隔离法（`batch_sniper_init_{idx}` 存初始数据 / `batch_sniper_editor_{idx}` 绑定 widget），消灭 `StreamlitValueAssignmentNotAllowedError`，用户编辑在 rerun 间可靠保留。
-  - **ASR 内存缓存机制**：`_file_md5` MD5 内容键 + `asr_cache` session_state 缓存；「仅提取文字稿」写入缓存，「生成报告」复用缓存跳过云端 ASR，节省重复计费。
-  - **`CLAUDE.md` 最高行动宪法**：四大铁律固化为项目级约束（红蓝对抗 / TDD / Streamlit 状态机死锁红线 / JSON 截断抢救）。
-  - **TDD**：`tests/test_v76_asr_cache.py`（9 case）+ 全量回归 48 passed。
-  - 发版 **`python build_release.py`** → **`AI路演教练_纯净交付版_V7.6`**
+- [x] **阶段 4.7：V8.0 生产级协作与精准解析版** 【COMPLETED 2026-04-02】
+  - **磁盘级 ASR 缓存**（`disk_asr_cache.py`）：MD5 哈希键 + 原子写入，三级缓存（内存→磁盘→云端），实现跨 session 永久免费秒开。
+  - **项目专属热词库**：UI 文本框 → `transcribe_siliconflow initial_prompt` 注入，从源头提升专有名词识别率。
+  - **三道防线审查台**：第一道（V7.6 狙击清单保留）→ 第二道（`refine_risk_point` 局部精炼 + 双 Key 安全注入）→ 第三道（`polish_manual_risk_point` AI 润色无中生有）。
+  - **TDD**：新增 Mock 测试（含 disk_cache、hot_words、refinement 等）；全量 **`pytest tests/` → 74 passed**（以本机为准）。
+  - **Schema 六联动**：`needs_refinement`、`refinement_note` 同步 Prompt、审查台、测试。
+  - **V7.6 已并入本阶段交付**：双 Key 狙击表；会话 `asr_cache` + 流水线 `cached_words` 跳过 ASR（详见 `tests/test_v76_asr_cache.py`）。
+  - **`CLAUDE.md`**：四大铁律（红蓝对抗 / TDD / Streamlit 状态机 / JSON 抢救）；**`AGENTS.md`**：全模型统一握手与文件地图。
+  - 发版 **`python build_release.py`** → 目录名随 **`CURRENT_VERSION`** 变化。
+- [x] **阶段 4.8：V8.3 生产级三大修复版** 【COMPLETED 2026-04-02】
+  - **Bug 1 领域幻觉根治**：`llm_judge._build_system_prompt` 注入 `<DOMAIN_ANCHOR>` 块，硬科技/军工/低空经济领域铁律，7 个歧义词强制技术解释，3 条绝对红线（禁止捏造法律叙事/机构名/人名）。
+  - **Bug 2 狙击清单静默失效修复**：`st.data_editor` 在 session_state 存 delta dict 非 DataFrame；新增 `batch_sniper_result_{idx}` 安全 key 存完整 DataFrame 返回值，`_batch_sniper_targets_json` 优先读 result_key。
+  - **Bug 3 转写无标点修复**：Paraformer REST 参数补全 `enable_punctuation_prediction=True` + `disfluency_removal_enabled=True`。
+  - 全量回归 **74 passed**。
 
 ## 四、 给 AI 助手 (Cursor) 的行为规范
 每次回答前，请仔细复习本文件。
@@ -45,7 +54,7 @@
 
 ## 🚀 v3.0 架构演进路线图 (Roadmap)
 
-**当前状态 (V7.6)**：在 V7.5 全部能力之上，已完成 **Streamlit 状态机解耦（双 Key 隔离）**、**ASR 内存缓存（同一录音不重复计费）**、**`CLAUDE.md` 宪法约束**，并通过 48 个全量回归测试。`app.py` 侧 QA 合并默认 **`max_chars=30000`**。
+**当前状态 (V8.0)**：在 V7.6 全部能力之上，完成**磁盘级 ASR 缓存（三级架构）**、**项目专属热词库**、**三道防线审查台（局部精炼引擎 + AI 润色无中生有）**、**生产级状态机安全**，通过 **74 个全量回归测试**。
 
 **产品提示（已实现/可配置）**：超大文档时应在业务侧拆分或提高截断阈值前评估 Token 与成本；侧边栏与 README 已强调「先 PDF/Word、非 PPT」等约束。
 

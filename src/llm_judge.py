@@ -156,8 +156,64 @@ def _recover_risk_point_dicts_from_truncated_json(raw: str) -> list[dict[str, An
     return items or None
 
 
-def _salvage_analysis_report_from_truncated_json(raw: str) -> AnalysisReport | None:
-    dicts = _recover_risk_point_dicts_from_truncated_json(raw)
+def _closing_brace_indices_outside_strings(s: str) -> list[int]:
+    """从左到右记录所有位于 JSON 字符串外的 `}` 下标（供逆向裁剪候选）。"""
+    in_str = False
+    escape = False
+    out: list[int] = []
+    for i, c in enumerate(s):
+        if escape:
+            escape = False
+            continue
+        if in_str:
+            if c == "\\":
+                escape = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == "}":
+            out.append(i)
+    return out
+
+
+def salvage_risk_point_dicts_from_truncated_llm_json(raw: str) -> list[dict[str, Any]] | None:
+    """
+    抢救 `risk_points` 中已完整闭合的对象列表。
+    顺序：① 数组内 raw_decode 增量解析；② 自右向左在字符串外截取到最后一个 `}` 再试；
+    ③ 自尾向前逐字符缩短再试。全程不抛 JSONDecodeError。
+    """
+    if not (raw or "").strip():
+        return None
+    direct = _recover_risk_point_dicts_from_truncated_json(raw)
+    if direct:
+        return direct
+    mi = raw.find('"risk_points"')
+    if mi < 0:
+        return None
+    lb = raw.find("[", mi)
+    if lb < 0:
+        return None
+    for j in reversed(_closing_brace_indices_outside_strings(raw)):
+        if j <= lb:
+            continue
+        prefix = raw[: j + 1].rstrip()
+        got = _recover_risk_point_dicts_from_truncated_json(prefix)
+        if got:
+            return got
+    rstrip = raw.rstrip()
+    max_trim = min(8000, max(0, len(rstrip)))
+    for t in range(1, max_trim + 1):
+        got = _recover_risk_point_dicts_from_truncated_json(rstrip[:-t].rstrip())
+        if got:
+            return got
+    return None
+
+
+def salvage_truncated_analysis_report(raw: str) -> AnalysisReport | None:
+    """将截断 LLM 输出抢救为可展示的 AnalysisReport；无法抢救时返回 None。"""
+    dicts = salvage_risk_point_dicts_from_truncated_llm_json(raw)
     if not dicts:
         return None
     risks: list[RiskPoint] = []
@@ -182,6 +238,10 @@ def _salvage_analysis_report_from_truncated_json(raw: str) -> AnalysisReport | N
         ),
         risk_points=risks,
     )
+
+
+def _salvage_analysis_report_from_truncated_json(raw: str) -> AnalysisReport | None:
+    return salvage_truncated_analysis_report(raw)
 
 
 def _validation_suggests_truncated_json(e: ValidationError) -> bool:
@@ -256,13 +316,35 @@ def _build_system_prompt(
     sniper_block = _format_sniper_block(ctx["sniper_targets_json"])
 
     return f"""你是一位拥有15年一线投行经验的「顶级金牌路演教练」。你的唯一服务对象是【被访谈对象/路演发言人】。你正在复盘带有词级索引 [index] 的录音逐字稿，目的是帮助发言人提升话术应对能力。
+<DOMAIN_ANCHOR>
+【行业领域铁律 — 优先级高于一切，在解读任何词汇前必须先读此节】
+本系统专用于以下领域的创业企业被尽调访谈与路演复盘：
+硬科技 / 深科技 / 军工国防 / 低空经济 / 先进制造 / 半导体。
+
+遇到存在歧义的词汇，必须优先采纳【技术 / 商业 / 产品维度】的解释，
+严禁脑补法律诉讼、公关纠纷或社会事件背景，具体规则如下：
+  • "指控"   → 指挥控制（Command and Control，C2），军工/低空领域标准术语
+  • "火控"   → 火力控制系统（Fire Control System），非法律"控诉"
+  • "靶场"   → 测试场地 / 靶向测试环境
+  • "制导"   → 导弹制导 / 精准制导技术
+  • "预警"   → 感知预警系统，非灾害/舆情预警
+  • "攻击"   → 进攻性飞行器 / 攻击模式，非人身攻击
+  • "载荷"   → 有效载荷（Payload），航空器携带的任务设备
+
+【绝对红线】：
+1. 除非逐字稿中明确出现「法院」「诉讼」「起诉书」「律师函」等法律词汇，
+   否则禁止凭空引入任何法律纠纷叙事。
+2. 严禁捏造不存在于逐字稿中的机构名称、产品名称或人名。
+3. 如不确定某专业术语的含义，优先假设其为当前硬科技领域的技术术语，
+   而非通用社会语境中的含义。
+</DOMAIN_ANCHOR>
 <CONTEXT>
 当前业务场景：{ctx["biz_type"]}
 双方角色设定公理：{ctx["exact_roles"]}
 当前投资机构/项目名称：{ctx["project_name"]}
 被访谈对象（标识）：{ctx["interviewee"]}
 当前录音文件标识：{ctx["recording_label"]}
-🎯 主理人【结构化狙击清单】（JSON 数组，每项含 quote=原文引用、reason=人工疑点；优先级高于一切自由文本备注）：
+🎯 主理人【结构化狙击清单】（JSON 数组，每项含 quote=原文引用、reason=找茬疑点；优先级高于一切自由文本备注；须对每条执行 1V1 狙击核实）：
 {sniper_block}
 其它自由备注（补充）：{ctx["session_notes"]}
 </CONTEXT>
@@ -309,6 +391,8 @@ def _build_system_prompt(
 - 根级字段 total_score_deduction_reason：结合总分与 <KNOWLEDGE_BASE>，说明主要扣分维度与依据。
 - 每个 risk_points[] 元素的 deduction_reason：结合参考QA具体指出偏离了哪条口径；若无有效QA可写「未提供可对齐的QA条款，扣分依据为行业尽调常识」。
 - 字段 is_manual_entry 仅允许为 false。
+- 字段 needs_refinement 仅允许为 false。
+- 字段 refinement_note 仅允许为空字符串 ""。
 - 【极度重要】：输出 start_word_index 和 end_word_index 时切忌只圈出错片段的几个词；必须向外扩展索引边界，包含投资人完整提问与创始人完整回答段落，使切割音频能呈现完整交锋语境。（**例外**：因 <TASK> 第 3 条「🎯 定向核实」单独提取的 RiskPoint 必须遵守该条中的**字面量锚定**与**约 60 秒内、单回合**纪律，禁止套用本条无边界扩展。）
 
 必须严格按照 JSON Schema 输出，start/end index 必须精确。
@@ -467,6 +551,233 @@ def load_transcription_words(path: Path) -> List[TranscriptionWord]:
             raise ValueError(f"第 {i} 项不是对象")
         out.append(TranscriptionWord.model_validate(item))
     return out
+
+
+def refine_risk_point(
+    rp_dict: dict[str, Any],
+    words: List[TranscriptionWord],
+    *,
+    model_choice: str = "deepseek",
+    explicit_context: dict[str, Any] | None = None,
+    qa_text: str = "",
+    refinement_note: str = "",
+) -> RiskPoint:
+    """
+    局部精炼：对单个风险点调用 LLM 深度重写。
+    提取该条目对应的词段作为上下文，注入主理人批示意见，返回精炼后的 RiskPoint。
+    词级索引（start/end_word_index）在 prompt 中要求 LLM 保持一致。
+    """
+    ctx = _normalize_explicit_context(explicit_context)
+    sw = int(rp_dict.get("start_word_index", 0))
+    ew = int(rp_dict.get("end_word_index", 0))
+
+    # 提取对应词段（向前后各扩 5 词作上下文）
+    n = len(words)
+    seg_start = max(0, sw - 5)
+    seg_end = min(n - 1, ew + 5)
+    segment_words = words[seg_start: seg_end + 1]
+    segment_text = " ".join(f"[{w.word_index}]{w.text}" for w in segment_words)
+
+    rp_json_str = json.dumps(rp_dict, ensure_ascii=False, indent=2)
+    note_block = (refinement_note or "").strip() or "（无额外批示，请基于逐字稿和 QA 自行深化分析）"
+    kb_block = (qa_text or "").strip() or "未提供参考QA知识库。"
+    schema_str = json.dumps(RiskPoint.model_json_schema(), ensure_ascii=False)
+
+    system_prompt = f"""你是一位拥有15年一线投行经验的「顶级金牌路演教练」。
+主理人对 AI 初稿中的一个风险点不满意，需要你对其进行深度精炼。
+
+<CONTEXT>
+业务场景：{ctx["biz_type"]}
+双方角色：{ctx["exact_roles"]}
+项目名称：{ctx["project_name"]}
+被访谈对象：{ctx["interviewee"]}
+</CONTEXT>
+
+<KNOWLEDGE_BASE>
+{kb_block}
+</KNOWLEDGE_BASE>
+
+<TASK>
+对以下风险点进行深度精炼。要求：
+1. 保持 start_word_index={sw} / end_word_index={ew} 不变（除非主理人明确要求调整）
+2. 所有分析必须立足于【发言人】视角
+3. improvement_suggestion 必须给出具体话术示范
+4. is_manual_entry 必须为 false
+5. needs_refinement 必须为 false
+6. refinement_note 必须为空字符串 ""
+7. 严格按照 JSON Schema 输出单个 RiskPoint 对象
+</TASK>
+
+<ORIGINAL_RISK_POINT>
+{rp_json_str}
+</ORIGINAL_RISK_POINT>
+
+<PRINCIPAL_INSTRUCTION>
+{note_block}
+</PRINCIPAL_INSTRUCTION>
+
+<JSON_SCHEMA>
+{schema_str}
+</JSON_SCHEMA>"""
+
+    user_prompt = (
+        f"以下是该风险点对应的逐字稿片段（词索引 {seg_start}–{seg_end}）：\n\n{segment_text}\n\n"
+        "请输出精炼后的完整 RiskPoint JSON 对象。"
+    )
+
+    client, model_name = _make_client(model_choice)
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
+
+    def _chat_once():
+        return client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = run_with_backoff(
+            _chat_once,
+            logger=logger,
+            operation=f"refine_risk_point ({model_choice})",
+        )
+    except APIError as e:
+        raise RuntimeError(f"精炼 LLM API 失败: {e}") from e
+
+    choice = response.choices[0] if response.choices else None
+    if choice is None or not choice.message or choice.message.content is None:
+        raise RuntimeError("精炼 LLM 返回空内容")
+
+    raw_json = choice.message.content.strip()
+    try:
+        rp = RiskPoint.model_validate_json(raw_json)
+    except (ValidationError, Exception) as e:
+        # 尝试将外层包装剥除（有时 LLM 会套一层 {"risk_point": {...}}）
+        try:
+            outer = json.loads(raw_json)
+            inner = next(
+                (v for v in outer.values() if isinstance(v, dict)), outer
+            )
+            rp = RiskPoint.model_validate(inner)
+        except Exception:
+            raise ValueError(f"精炼结果不符合 RiskPoint 契约: {e}\n原始: {raw_json[:500]}") from e
+
+    # 确保词索引一致性：若 LLM 偏离，强制修正
+    rp = rp.model_copy(update={
+        "start_word_index": sw,
+        "end_word_index": ew,
+        "needs_refinement": False,
+        "refinement_note": "",
+    })
+    return rp
+
+
+def polish_manual_risk_point(
+    raw_description: str,
+    *,
+    model_choice: str = "deepseek",
+    explicit_context: dict[str, Any] | None = None,
+    qa_text: str = "",
+) -> RiskPoint:
+    """
+    AI 润色：将主理人的原始文字描述结构化为标准 RiskPoint 格式并插入报告。
+    返回的 RiskPoint 中 is_manual_entry=True、start/end_word_index=0。
+    """
+    desc = (raw_description or "").strip()
+    if not desc:
+        raise ValueError("描述不能为空，请填写至少一句话再调用 LLM 润色。")
+
+    ctx = _normalize_explicit_context(explicit_context)
+    kb_block = (qa_text or "").strip() or "未提供参考QA知识库。"
+    schema_str = json.dumps(RiskPoint.model_json_schema(), ensure_ascii=False)
+
+    system_prompt = f"""你是一位拥有15年一线投行经验的「顶级金牌路演教练」。
+主理人手动输入了一段观察，请将其结构化为标准的风险点分析格式。
+
+<CONTEXT>
+业务场景：{ctx["biz_type"]}
+双方角色：{ctx["exact_roles"]}
+项目名称：{ctx["project_name"]}
+被访谈对象：{ctx["interviewee"]}
+</CONTEXT>
+
+<KNOWLEDGE_BASE>
+{kb_block}
+</KNOWLEDGE_BASE>
+
+<TASK>
+将主理人的原始观察扩写为完整的 RiskPoint 分析。要求：
+1. is_manual_entry 必须为 true（这是人工标记的遗漏点，无词级音频切片）
+2. start_word_index 和 end_word_index 均必须为 0
+3. needs_refinement 必须为 false
+4. refinement_note 必须为空字符串 ""
+5. 在 improvement_suggestion 中给出具体话术示范
+6. 根据分析严重程度合理设置 risk_level 与 score_deduction
+7. 坚守合规底线，严禁过度承诺
+8. 严格按照 JSON Schema 输出单个 RiskPoint 对象
+</TASK>
+
+<JSON_SCHEMA>
+{schema_str}
+</JSON_SCHEMA>"""
+
+    user_prompt = f"以下是主理人的原始观察，请将其结构化：\n\n{desc}"
+
+    client, model_name = _make_client(model_choice)
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
+
+    def _chat_once():
+        return client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = run_with_backoff(
+            _chat_once,
+            logger=logger,
+            operation=f"polish_manual_risk_point ({model_choice})",
+        )
+    except APIError as e:
+        raise RuntimeError(f"润色 LLM API 失败: {e}") from e
+
+    choice = response.choices[0] if response.choices else None
+    if choice is None or not choice.message or choice.message.content is None:
+        raise RuntimeError("润色 LLM 返回空内容")
+
+    raw_json = choice.message.content.strip()
+    try:
+        rp = RiskPoint.model_validate_json(raw_json)
+    except (ValidationError, Exception) as e:
+        try:
+            outer = json.loads(raw_json)
+            inner = next(
+                (v for v in outer.values() if isinstance(v, dict)), outer
+            )
+            rp = RiskPoint.model_validate(inner)
+        except Exception:
+            raise ValueError(f"润色结果不符合 RiskPoint 契约: {e}\n原始: {raw_json[:500]}") from e
+
+    # 强制人工条目标记
+    rp = rp.model_copy(update={
+        "is_manual_entry": True,
+        "start_word_index": 0,
+        "end_word_index": 0,
+        "needs_refinement": False,
+        "refinement_note": "",
+    })
+    return rp
 
 
 def _save_report(path: Path, report: AnalysisReport) -> None:
