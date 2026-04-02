@@ -129,11 +129,13 @@ def run_pitch_file_job(
     *,
     on_status: Callable[[str], None] | None = None,
     skip_html_export: bool = False,
+    cached_words: list[TranscriptionWord] | None = None,
 ) -> tuple[list[TranscriptionWord], AnalysisReport]:
     """
     执行单条音频的完整流水线。失败时抛出异常，由调用方（如 Streamlit）捕获汇总。
     on_status 可选，用于 Streamlit st.status.update(label=...) 等 UI 进度。
     skip_html_export=True 时仅写 analysis JSON（初稿），不生成 HTML，供 V3 审查台人工确认后再导出。
+    cached_words 非 None 时直接复用，跳过云端 ASR，同时仍将词列表写入转写 JSON 供归档。
     返回 (原始词级转写列表, AnalysisReport)（与送 LLM 的脱敏稿不同，HTML 与落盘 JSON 使用未脱敏 words）。
     """
     def _line(msg: str) -> None:
@@ -141,12 +143,26 @@ def run_pitch_file_job(
         if on_status:
             on_status(msg)
 
-    _line(f"⏱️ 正在提取音频特征：{audio_path.name}（耗时可能较长，请耐心等待）…")
-    words = transcribe_audio(audio_path, out_json_path=params.transcription_json_path)
-    char_est = sum(len(w.text or "") for w in words)
-    _line(
-        f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。正在执行商业机密脱敏打码…"
-    )
+    if cached_words is not None:
+        words = cached_words
+        char_est = sum(len(w.text or "") for w in words)
+        _line(
+            f"✅ 已复用本条录音的转写缓存（约 {char_est} 字 / {len(words)} 个词级锚点），"
+            "跳过云端 ASR，节省资源。正在执行商业机密脱敏打码…"
+        )
+        # 缓存命中时仍需落盘转写 JSON，保持归档完整性
+        if params.transcription_json_path is not None:
+            params.transcription_json_path.write_text(
+                json.dumps([w.model_dump() for w in words], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+    else:
+        _line(f"⏱️ 正在提取音频特征：{audio_path.name}（耗时可能较长，请耐心等待）…")
+        words = transcribe_audio(audio_path, out_json_path=params.transcription_json_path)
+        char_est = sum(len(w.text or "") for w in words)
+        _line(
+            f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。正在执行商业机密脱敏打码…"
+        )
     words_for_llm = mask_words_for_llm(words, params.sensitive_words)
     _line(
         f"⏱️ {params.model_choice} 正在进行多维度 QA 对齐与痛点审查（结构化 JSON，最耗时一步）…"

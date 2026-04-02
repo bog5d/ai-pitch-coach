@@ -29,7 +29,13 @@
   - **量化扣分**：`RiskPoint.score_deduction` + `llm_judge` Prompt；**定向核实**：结构化 **狙击清单**（`sniper_targets_json`）注入 CONTEXT。
 - [x] **阶段 4.3：V7.0 审查台本地草稿（`draft_manager` + `.drafts/`）与 QA/转写分池截断（`llm_judge`）**
 - [x] **阶段 4.4：V7.1 定向核实与切片掐头留尾；V7.2 `report_builder` 按索引物理覆写 `original_text`（防 QA 洗稿）+ `tests/test_v72_backend_override.py` 压测**
-- [x] **阶段 4.5：V7.5 专家共驾** — 说话人 ID / 按人可读文字稿；流水线与锁定 JSON **覆写 `original_text`**；LLM **`max_tokens` + 截断 JSON 抢救**；**`st.data_editor` 狙击清单**（`sniper_targets_json`）
+- [x] **阶段 4.5：V7.5 专家共驾** — 说话人 ID / 按 **[发言人 N]** 可读文字稿（`format_transcript_plain_by_speaker`）；流水线与锁定 JSON **覆写 `original_text`**；LLM **`max_tokens` + 截断 JSON 抢救**（`salvage_*`，`tests/test_v75_json_salvage.py`）；**`st.data_editor` 狙击清单**列 **原文引用 / 找茬疑点**、会话绑定（`tests/test_v75_formatter.py` 等）；发版 **`python build_release.py`** → **`AI路演教练_纯净交付版_V7.5`**
+- [x] **阶段 4.6：V7.6 状态机解耦 · ASR 缓存 · 收官加固** 【COMPLETED 2026-04-02】
+  - **彻底修复 Streamlit `data_editor` 状态死锁**：双 Key 隔离法（`batch_sniper_init_{idx}` 存初始数据 / `batch_sniper_editor_{idx}` 绑定 widget），消灭 `StreamlitValueAssignmentNotAllowedError`，用户编辑在 rerun 间可靠保留。
+  - **ASR 内存缓存机制**：`_file_md5` MD5 内容键 + `asr_cache` session_state 缓存；「仅提取文字稿」写入缓存，「生成报告」复用缓存跳过云端 ASR，节省重复计费。
+  - **`CLAUDE.md` 最高行动宪法**：四大铁律固化为项目级约束（红蓝对抗 / TDD / Streamlit 状态机死锁红线 / JSON 截断抢救）。
+  - **TDD**：`tests/test_v76_asr_cache.py`（9 case）+ 全量回归 48 passed。
+  - 发版 **`python build_release.py`** → **`AI路演教练_纯净交付版_V7.6`**
 
 ## 四、 给 AI 助手 (Cursor) 的行为规范
 每次回答前，请仔细复习本文件。
@@ -39,7 +45,7 @@
 
 ## 🚀 v3.0 架构演进路线图 (Roadmap)
 
-**当前状态 (V7.5)**：在 V7.0–V7.2 能力之上，已具备 **说话人区分与分段文字稿**、**结构化狙击清单**、流水线/锁定 **JSON 与 HTML 同源覆写 `original_text`**、**LLM 输出扩容与截断抢救**。`app.py` 侧 QA 合并默认 **`max_chars=30000`**。
+**当前状态 (V7.6)**：在 V7.5 全部能力之上，已完成 **Streamlit 状态机解耦（双 Key 隔离）**、**ASR 内存缓存（同一录音不重复计费）**、**`CLAUDE.md` 宪法约束**，并通过 48 个全量回归测试。`app.py` 侧 QA 合并默认 **`max_chars=30000`**。
 
 **产品提示（已实现/可配置）**：超大文档时应在业务侧拆分或提高截断阈值前评估 Token 与成本；侧边栏与 README 已强调「先 PDF/Word、非 PPT」等约束。
 
@@ -49,3 +55,18 @@
 
 - **升级思路**：不改动外层编排契约（`job_pipeline.run_pitch_file_job` + `schema`），主要替换 `src/document_reader.py` 引擎，必要时增加「检索上下文」字段进入 `evaluate_pitch`。
 - **工作流**：AI 先看文档目录提取摘要 → 定位核心所在页码 → 仅精准抽取该页文本与录音对齐。
+
+---
+
+## 🔭 V8.0 研发重点展望（待规划）
+
+**核心方向：深度 RAG 检索增强与多轮精炼引擎**
+
+| 子课题 | 描述 |
+|--------|------|
+| **Hierarchical RAG** | `document_reader` 替换为分层检索引擎：目录摘要 → 页码定位 → 精准段落抽取，解决超大文档（招股书/行业年报）硬截断导致的对齐质量下降 |
+| **多轮精炼对话** | 审查台从「一次生成+人工修改」升级为「AI 初稿 → 人工圈点 → AI 针对圈点处二次精炼」，缩短人工编辑时间 |
+| **跨录音知识图谱** | 同一批次多条录音之间的矛盾点、重复风险点自动交叉比对，生成「批次级风险图谱」 |
+| **持久化向量缓存** | 将 ASR 内存缓存（V7.6）升级为磁盘级向量索引，支持跨 session 的相似语义段复用 |
+
+**触发条件**：当业务侧出现「同一项目多轮尽调、需要跨会议交叉核实」或「单次转写 >5 万字、QA 文档 >10 万字」时，启动 V8.0 预研。

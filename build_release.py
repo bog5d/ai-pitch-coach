@@ -2,6 +2,7 @@
 一键生成「纯净交付」文件夹 + 交付级 ZIP（Green-Box Release）。
 运行：在项目根目录执行  python build_release.py
 发版版本以本文件内 CURRENT_VERSION 为准（当前 V7.5）；目录 / ZIP 名随其变化。
+先在系统临时目录下完整拼装再打包；若项目根下旧版交付目录被 debug.log 等占用无法删除，仍会生成 ZIP，并提示新文件夹的临时路径。
 若根目录存在 `.streamlit/`（如 `config.toml` 上调 `maxUploadSize`），会一并打入交付目录。
 
 编码策略（跨中文 Windows / CMD / Python）：
@@ -14,6 +15,8 @@ from __future__ import annotations
 import re
 import shutil
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 # Windows 控制台 UTF-8（构建机）
@@ -27,7 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent
 
 # 发版时与主理人约定版本对齐；ZIP / 交付文件夹名均由此派生
-CURRENT_VERSION = "V7.5"
+CURRENT_VERSION = "V7.6"
 OUT_NAME = f"AI路演教练_纯净交付版_{CURRENT_VERSION}"
 OUT = ROOT / OUT_NAME
 
@@ -51,6 +54,8 @@ OPTIONAL_ROOT_FILES = [
     "V7.0_新功能与体验大升级.txt",
     "V7.2_新功能与体验大升级.txt",
     "V7.5_新功能与体验大升级.txt",
+    "V7.5_专家共驾与精准狙击版说明.txt",
+    "V7.6_专家共驾版_功能说明.txt",
     ".env.example",
 ]
 
@@ -84,8 +89,20 @@ _BAT_RELEASE_LINES = [
 
 
 def _ensure_clean_dir(path: Path) -> None:
+    """清空目标目录。Windows 下若 debug.log 等被其它进程占用，短暂重试后再失败。"""
     if path.exists():
-        shutil.rmtree(path)
+        last_err: OSError | None = None
+        for attempt in range(8):
+            try:
+                shutil.rmtree(path)
+                last_err = None
+                break
+            except OSError as e:
+                last_err = e
+                if attempt < 7:
+                    time.sleep(0.5)
+        if last_err is not None:
+            raise last_err
     path.mkdir(parents=True, exist_ok=True)
 
 
@@ -201,14 +218,35 @@ def _copy_dot_streamlit(dest_root: Path) -> None:
     )
 
 
-def _make_release_zip() -> Path:
-    """将纯净版文件夹打成 ZIP，位于项目根目录（与 OUT_NAME 一致，随 CURRENT_VERSION 变化）。"""
+def _make_release_zip(staging_parent: Path) -> Path:
+    """将 staging_parent / OUT_NAME 打成 ZIP，位于项目根目录（与 OUT_NAME 一致）。"""
     zip_base = str(ROOT / OUT_NAME)
     zip_path = Path(zip_base + ".zip")
     if zip_path.is_file():
-        zip_path.unlink()
-    created = shutil.make_archive(zip_base, "zip", root_dir=str(ROOT), base_dir=OUT_NAME)
+        try:
+            zip_path.unlink()
+        except OSError:
+            pass
+    created = shutil.make_archive(
+        zip_base, "zip", root_dir=str(staging_parent), base_dir=OUT_NAME
+    )
     return Path(created)
+
+
+def _rmtree_retry(path: Path) -> bool:
+    """删除目录树，成功返回 True；Windows 文件占用时返回 False。"""
+    if not path.exists():
+        return True
+    last_err: OSError | None = None
+    for _ in range(8):
+        try:
+            shutil.rmtree(path)
+            return True
+        except OSError as e:
+            last_err = e
+            time.sleep(0.5)
+    print(f"\033[93m警告：无法删除「{path}」（可能被 debug.log 等占用）：{last_err}\033[0m")
+    return False
 
 
 def main() -> int:
@@ -220,59 +258,77 @@ def main() -> int:
             print(f"  - {m}")
         return 1
 
-    _ensure_clean_dir(OUT)
-
-    for dname in WHITELIST_DIRS:
-        src = ROOT / dname
-        dst = OUT / dname
-        shutil.copytree(
-            src,
-            dst,
-            ignore=shutil.ignore_patterns(
-                "__pycache__",
-                "*.pyc",
-                ".mypy_cache",
-                ".pytest_cache",
-            ),
-        )
-
-    _copy_dot_streamlit(OUT)
-
-    _write_release_bat(OUT / GENERATED_BAT)
-
-    for fname in REQUIRED_ROOT_FILES:
-        _copy_whitelist_file(fname, OUT)
-
-    for fname in OPTIONAL_ROOT_FILES:
-        if (ROOT / fname).is_file():
-            _copy_whitelist_file(fname, OUT)
-
-    for name in extra_bats + extra_shs:
-        shutil.copy2(ROOT / name, OUT / name)
-
-    env_out = OUT / ".env"
-    env_out.write_bytes(b"")
-
+    staging_parent = Path(tempfile.mkdtemp(prefix="aipc_release_"))
+    staging = staging_parent / OUT_NAME
     try:
-        zip_file = _make_release_zip()
-    except OSError as e:
-        print(f"\033[91m错误：生成 ZIP 失败：{e}\033[0m")
-        print(f"纯净文件夹已生成，可手动压缩：{OUT}")
-        return 1
+        _ensure_clean_dir(staging)
 
-    zip_name = zip_file.name
-    print()
-    print(
-        "\033[1m\033[92m✅ 纯净交付版打包并压缩成功！\033[0m"
-        f"\n\033[92m您现在可以直接将 【{zip_name}】 通过微信发送给同事或高管。\033[0m"
-    )
-    print(f"\033[96m文件夹：{OUT}\033[0m")
-    print(f"\033[96m压缩包：{zip_file.resolve()}\033[0m")
-    print(
-        "\033[90m（已保留解压后的文件夹，便于本地校验；分发以 ZIP 为主。）\033[0m"
-    )
-    print()
-    return 0
+        for dname in WHITELIST_DIRS:
+            src = ROOT / dname
+            dst = staging / dname
+            shutil.copytree(
+                src,
+                dst,
+                ignore=shutil.ignore_patterns(
+                    "__pycache__",
+                    "*.pyc",
+                    ".mypy_cache",
+                    ".pytest_cache",
+                ),
+            )
+
+        _copy_dot_streamlit(staging)
+
+        _write_release_bat(staging / GENERATED_BAT)
+
+        for fname in REQUIRED_ROOT_FILES:
+            _copy_whitelist_file(fname, staging)
+
+        for fname in OPTIONAL_ROOT_FILES:
+            if (ROOT / fname).is_file():
+                _copy_whitelist_file(fname, staging)
+
+        for name in extra_bats + extra_shs:
+            shutil.copy2(ROOT / name, staging / name)
+
+        env_out = staging / ".env"
+        env_out.write_bytes(b"")
+
+        try:
+            zip_file = _make_release_zip(staging_parent)
+        except OSError as e:
+            print(f"\033[91m错误：生成 ZIP 失败：{e}\033[0m")
+            print(f"\033[93m完整内容仍在临时目录：{staging}\033[0m")
+            return 1
+
+        folder_msg = str(OUT.resolve())
+        if _rmtree_retry(OUT):
+            shutil.move(str(staging), str(ROOT))
+            shutil.rmtree(staging_parent, ignore_errors=True)
+        else:
+            folder_msg = str(staging.resolve())
+            print(
+                f"\033[93m解压用文件夹未覆盖到项目根下（旧目录仍保留）。"
+                f"请关闭占用程序后删除「{OUT}」，再将下列文件夹移入项目根：\n  {staging}\033[0m"
+            )
+
+        zip_name = zip_file.name
+        print()
+        print(
+            "\033[1m\033[92m✅ 纯净交付版打包并压缩成功！\033[0m"
+            f"\n\033[92m您现在可以直接将 【{zip_name}】 通过微信发送给同事或高管。\033[0m"
+        )
+        print(f"\033[96m文件夹：{folder_msg}\033[0m")
+        print(f"\033[96m压缩包：{zip_file.resolve()}\033[0m")
+        print(
+            "\033[90m（ZIP 内顶层目录名与文件夹名一致；分发以 ZIP 为主。）\033[0m"
+        )
+        print()
+        return 0
+    finally:
+        # staging 已成功 move 时父目录多为空；失败时保留 staging 供人工拷贝
+        if staging_parent.exists() and not (staging_parent / OUT_NAME).exists():
+            shutil.rmtree(staging_parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# AI 路演教练 — 架构与数据流（V3.1 / V4.0 / V6.2 / V7.0 / V7.2 / V7.5）
+# AI 路演教练 — 架构与数据流（V3.1 / V4.0 / V6.2 / V7.0 / V7.2 / V7.5 / V7.6）
 
 本文档供后续开发者与 AI 接管时快速建立心智模型：**模块职责、数据流、人机协同与商业级防护**。
 
@@ -8,7 +8,7 @@
 
 | 层级 | 组件 | 职责 |
 |------|------|------|
-| UI | `app.py`（Streamlit） | API 配置、按录音上下文、**V6.2 智能音频网关**（`st.status` + `smart_compress_media`）、触发 `job_pipeline`、**V3 审查台**（`session_state`）、**V7.0 草稿**与静默落盘、**V7.1「仅提取文字稿」**（V7.5 按说话人分段）、**V7.5 `st.data_editor` 狙击清单**、锁定后 `generate_html_report` |
+| UI | `app.py`（Streamlit） | API 配置、按录音上下文、**V6.2 智能音频网关**（`st.status` + `smart_compress_media`）、触发 `job_pipeline`、**V3 审查台**（`session_state`）、**V7.0 草稿**与静默落盘、**V7.1「仅提取文字稿」**（V7.5 按说话人分段）、**V7.5 `st.data_editor` 狙击清单**、**V7.6 双 Key 隔离法** + **ASR 内存缓存**、锁定后 `generate_html_report` |
 | 草稿 | `src/draft_manager.py` | **本地草稿静默持久化**：可写根下隐藏目录 `.drafts/`，`temp_*.json` → `os.replace` 原子落盘为 `draft_*.json`；`load_draft` / `list_available_drafts` 供断线恢复 |
 | 网关 | `src/audio_preprocess.py` | ≥10MB：`ffmpeg` 抽视频轨 + 16k 单声道 MP3；失败回退原文件 |
 | 编排 | `src/job_pipeline.py` | 转写 → 脱敏 → LLM → 写 JSON；可选跳过 HTML（供审查后再导出） |
@@ -93,12 +93,57 @@
 
 ## 7. 测试
 
-- `pytest tests/`：含 `job_pipeline`、`extreme_cases`、`garbage_collector`、`test_v72_backend_override`（V7.2 覆写毒药/越界压测）等。
+- `pytest tests/`：含 `job_pipeline`、`extreme_cases`、`garbage_collector`、`test_v72_backend_override`（V7.2 覆写毒药/越界压测）、**`test_v75_formatter`**（按说话人分段 / 无 `[0]` 式导出）、**`test_v75_json_salvage`**（截断 JSON 抢救）、**`test_v76_asr_cache`**（V7.6 缓存命中 / 跳过 ASR / 落盘一致性，9 case）等。
 - 转写/LLM 集成测试以 mock 为主，避免外网依赖。
+- 全量回归：**48 passed**（截至 V7.6）。
 
 ---
 
-*文档版本：V7.5 · 与 app.py 当前行为对齐。*
+*文档版本：V7.6 · 与 app.py 当前行为对齐。*
+
+---
+
+## 8. V7.6 新增：ASR 缓存数据流与 UI 状态保护协议
+
+### 8.1 ASR 内存缓存数据流
+
+```text
+[用户点击「仅提取文字稿」]
+    → _file_md5(uf.getvalue())  →  asr_cache[hash] 命中？
+          命中 → 直接返回 cached["plain"]                  (跳过 transcribe_audio)
+          未中 → transcribe_audio(work) → 写 asr_cache[hash] = {words, plain}
+
+[用户点击「生成报告」]
+    → _file_md5(audio_path.read_bytes()) → asr_cache[hash] 命中？
+          命中 → TranscriptionWord.model_validate(w) for w in cached["words"]
+              → run_pitch_file_job(..., cached_words=cached_words_models)
+                    ↳ 跳过 transcribe_audio；仍落盘 transcription.json（归档完整性）
+          未中 → 正常 run_pitch_file_job（内部调 transcribe_audio）
+              → 结束后写入 asr_cache[hash]（供下次复用）
+```
+
+缓存键：`hashlib.md5(文件内容字节).hexdigest()`（32 位十六进制）。
+缓存生命周期：与当前 Streamlit `session_state` 绑定，浏览器刷新或重启后清空（内存级）。
+
+### 8.2 UI 状态保护协议（Streamlit 双 Key 隔离法）
+
+**问题根因**：`st.data_editor(key=k)` 被渲染后，Streamlit 将 `session_state[k]` 的控制权接管（widget-managed）。
+后续任何对 `session_state[k]` 的写入均触发 `StreamlitValueAssignmentNotAllowedError`。
+
+**V7.6 解决方案——双 Key 隔离**：
+
+| Key | 命名规则 | 用途 | 允许写入？ |
+|-----|----------|------|-----------|
+| `init_key` | `batch_sniper_init_{idx}` | 存放初始 DataFrame，每次 rerun 写入此处 | ✅ 可写 |
+| `ed_key` | `batch_sniper_editor_{idx}` | 仅绑定 `st.data_editor(key=ed_key)` | ❌ 严禁写入 |
+
+文件名变更触发自动填充时：
+1. 更新 `init_key` 内容；
+2. `del session_state[ed_key]`（若存在）→ 强制 widget 以新 `init_key` 数据重新初始化。
+
+读取用户编辑结果：优先 `session_state.get(ed_key)`（widget 托管），兜底 `session_state.get(init_key)`。
+
+---
 
 ### 架构示意（V6.2 / V7.x 增补链路）
 
@@ -106,4 +151,8 @@
 [上传原始媒体] → (app.py 体积探针) → [智能音频网关 audio_preprocess] → [transcribe_audio]
                                                       ↓ 失败回退原文件
 [显式上下文 狙击清单 JSON + 备注] ───────────────→ [llm_judge 结构化狙击 + 量化扣分引擎] → AnalysisReport
+
+V7.6 缓存层：
+[_file_md5] → asr_cache{hash: {words, plain}} → run_pitch_file_job(cached_words=...)
+                                                        ↓ 命中时跳过 transcribe_audio
 ```

@@ -530,10 +530,23 @@ def _v3_render_review_workbench() -> None:
                 _v3_render_single_stem_review(stem)
 
 
+def _normalize_sniper_editor_df(df):
+    """兼容 V7.5 前列名「人工疑点」→「找茬疑点」，避免会话里旧表丢列。"""
+    if df is None or not hasattr(df, "columns"):
+        return df
+    if "人工疑点" in df.columns and "找茬疑点" not in df.columns:
+        return df.rename(columns={"人工疑点": "找茬疑点"})
+    return df
+
+
 def _batch_sniper_targets_json(idx: int) -> str:
-    """将 data_editor 绑定在 session_state 中的狙击表序列化为 JSON（quote/reason）。"""
+    """从狙击表读取数据，序列化为 JSON（quote/reason）。
+    优先读 widget 托管的用户编辑结果（ed_key），兜底读初始数据（init_key）。
+    """
     ed_key = f"batch_sniper_editor_{idx}"
-    df = st.session_state.get(ed_key)
+    init_key = f"batch_sniper_init_{idx}"
+    df = st.session_state.get(ed_key) or st.session_state.get(init_key)
+    df = _normalize_sniper_editor_df(df)
     if df is None:
         return "[]"
     if not hasattr(df, "iterrows"):
@@ -541,15 +554,22 @@ def _batch_sniper_targets_json(idx: int) -> str:
     rows_out: list[dict[str, str]] = []
     for _, row in df.iterrows():
         q = str(row.get("原文引用", "") or "").strip()
-        r = str(row.get("人工疑点", "") or "").strip()
+        r = str(row.get("找茬疑点", row.get("人工疑点", "")) or "").strip()
         if q or r:
             rows_out.append({"quote": q, "reason": r})
     return json.dumps(rows_out, ensure_ascii=False)
 
 
 def _v71_transcribe_upload_to_plain(uf) -> str:
-    """仅转写上传文件为可读纯文本（与主流程一致：≥10MB 先走智能压缩网关）。"""
+    """仅转写上传文件为可读纯文本，并将结果存入 ASR 内存缓存。
+    缓存命中时直接返回，跳过云端调用；点击「生成报告」时主流程可复用同一缓存。
+    """
     raw = uf.getvalue()
+    file_hash = _file_md5(raw)
+    asr_cache: dict = st.session_state.setdefault("asr_cache", {})
+    if file_hash in asr_cache:
+        return asr_cache[file_hash]["plain"]
+
     suffix = Path(uf.name).suffix or ".wav"
     f1 = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     f1.write(raw)
@@ -572,7 +592,12 @@ def _v71_transcribe_upload_to_plain(uf) -> str:
                 paths.remove(work)
                 work = p2
         words = transcribe_audio(work, out_json_path=None)
-        return format_transcript_plain_by_speaker(words)
+        plain = format_transcript_plain_by_speaker(words)
+        asr_cache[file_hash] = {
+            "words": [w.model_dump() for w in words],
+            "plain": plain,
+        }
+        return plain
     finally:
         for p in paths:
             try:
@@ -612,6 +637,11 @@ def _env_configured(key: str) -> bool:
 def _qa_uploader_key_suffix(audio_name: str) -> str:
     """稳定短后缀，避免特殊字符进入 Streamlit widget key。"""
     return hashlib.sha256((audio_name or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _file_md5(data: bytes) -> str:
+    """计算文件内容 MD5，用作 ASR 内存缓存键（非安全场景，仅做内容去重）。"""
+    return hashlib.md5(data).hexdigest()  # noqa: S324
 
 
 def _as_upload_list(x: object) -> list:
@@ -940,7 +970,7 @@ def main() -> None:
             key="batch_autofill_filename",
             help=(
                 "按常见命名「机构-姓名」与可选末尾 8 位日期解析；更换本行对应录音文件名后会按新文件名重新覆盖被访谈人，"
-                "并将解析到的备注写入该条「人工疑点」列首行。关闭后仅手动填写。"
+                "并将解析到的备注写入该条「找茬疑点」列首行。关闭后仅手动填写。"
             ),
         )
         st.caption(
@@ -949,19 +979,26 @@ def main() -> None:
         for idx, uf in enumerate(uploaded_list):
             stem = stem_from_audio_filename(uf.name)
             track_key = f"_batch_audio_stem_{idx}"
-            ed_key = f"batch_sniper_editor_{idx}"
-            if ed_key not in st.session_state:
-                st.session_state[ed_key] = pd.DataFrame(
-                    [{"原文引用": "", "人工疑点": ""}]
+            init_key = f"batch_sniper_init_{idx}"   # 初始数据专用，写操作唯一入口
+            ed_key = f"batch_sniper_editor_{idx}"   # 仅绑定 data_editor widget，严禁写入
+            if init_key not in st.session_state:
+                st.session_state[init_key] = pd.DataFrame(
+                    [{"原文引用": "", "找茬疑点": ""}]
                 )
+            st.session_state[init_key] = _normalize_sniper_editor_df(
+                st.session_state[init_key]
+            )
             if st.session_state.get("batch_autofill_filename", True):
                 if st.session_state.get(track_key) != stem:
                     st.session_state[track_key] = stem
                     iv_guess, note_guess = guess_batch_fields_from_stem(stem)
                     st.session_state[f"batch_iv_{idx}"] = iv_guess
-                    st.session_state[ed_key] = pd.DataFrame(
-                        [{"原文引用": "", "人工疑点": note_guess}]
+                    st.session_state[init_key] = pd.DataFrame(
+                        [{"原文引用": "", "找茬疑点": note_guess}]
                     )
+                    # 新文件检测到：清除 widget 托管状态，强制下次渲染以 init_key 重新初始化
+                    if ed_key in st.session_state:
+                        del st.session_state[ed_key]
 
             st.markdown(f"**文件 {idx + 1}：** `{uf.name}`")
             st.text_input(
@@ -971,13 +1008,15 @@ def main() -> None:
                 help="仅作用于当前这一条录音的打分与复盘。",
             )
             st.caption(
-                "🎯 **结构化狙击清单**（绑定会话状态，重跑不丢）：「原文引用」贴原话，「人工疑点」写找茬方向；可多行。"
+                "🎯 **结构化狙击清单**（`key` 绑定会话，勿把返回值写回 state，避免循环刷新丢数）："
+                "「原文引用」贴原话，「找茬疑点」写找茬方向；可多行。"
             )
+            # 安全红线（铁律三）：init_key 提供初始数据，ed_key 绑定 widget；严禁反向赋值
             st.data_editor(
-                st.session_state[ed_key],
+                st.session_state[init_key],
                 column_config={
                     "原文引用": st.column_config.TextColumn("原文引用", width="large"),
-                    "人工疑点": st.column_config.TextColumn("人工疑点", width="large"),
+                    "找茬疑点": st.column_config.TextColumn("找茬疑点", width="large"),
                 },
                 num_rows="dynamic",
                 key=ed_key,
@@ -1184,9 +1223,21 @@ def main() -> None:
                             )
                             work_audio = audio_path
 
-                    status.write(
-                        "里程碑：云端转写 → 敏感词脱敏 → DeepSeek 多维度 QA 对齐（结构化 JSON）→ 初稿进入审查台。"
-                    )
+                    # ASR 缓存检查：若「提取文字稿」时已转写过，直接复用，避免重复计费
+                    file_hash = _file_md5(raw_bytes)
+                    asr_cache: dict = st.session_state.setdefault("asr_cache", {})
+                    cached_entry = asr_cache.get(file_hash)
+                    cached_words_models = None
+                    if cached_entry:
+                        cached_words_models = [
+                            TranscriptionWord.model_validate(w)
+                            for w in cached_entry["words"]
+                        ]
+                        status.write("✅ 检测到本条录音的转写缓存，跳过云端 ASR，节省资源。")
+                    else:
+                        status.write(
+                            "里程碑：云端转写 → 敏感词脱敏 → DeepSeek 多维度 QA 对齐（结构化 JSON）→ 初稿进入审查台。"
+                        )
 
                     per_iv = (st.session_state.get(f"batch_iv_{i}") or "").strip()
                     sniper_json = _batch_sniper_targets_json(i)
@@ -1230,7 +1281,15 @@ def main() -> None:
                         params,
                         on_status=_pipe_status,
                         skip_html_export=True,
+                        cached_words=cached_words_models,
                     )
+
+                    # 首次转写后写入缓存，供后续同文件操作复用
+                    if not cached_entry:
+                        asr_cache[file_hash] = {
+                            "words": [w.model_dump() for w in words],
+                            "plain": format_transcript_plain_by_speaker(words),
+                        }
 
                     draft = report.model_dump()
                     for _rp in draft.get("risk_points") or []:
