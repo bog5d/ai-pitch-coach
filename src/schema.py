@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, Field
 from typing import List, Literal
+from uuid import uuid4
 
 
 class TranscriptionWord(BaseModel):
@@ -47,6 +48,14 @@ class RiskPoint(BaseModel):
         default=False,
         description="人工在审查台增补的条目，可无词级音频切片",
     )
+    needs_refinement: bool = Field(
+        default=False,
+        description="主理人在审查台标记需 AI 精炼的条目；LLM 输出时必须为 false",
+    )
+    refinement_note: str = Field(
+        default="",
+        description="主理人给精炼 LLM 的批示意见；LLM 输出时必须为空字符串",
+    )
 
 
 class AnalysisReport(BaseModel):
@@ -62,3 +71,12 @@ class AnalysisReport(BaseModel):
         description="总分层面的扣分说明：结合QA与整体表现简述为何不是满分",
     )
     risk_points: List[RiskPoint] = Field(default_factory=list, description="所有踩坑点列表")
+
+
+class CompanyProfile(BaseModel):
+    company_id: str = Field(..., description="公司唯一标识，建议用拼音/英文slug")
+    display_name: str = Field(..., description="展示名称，如「ABC 资本」")
+    uuid: str = Field(default_factory=lambda: str(uuid4()), description="系统级唯一标识符，用于跨系统追踪")
+    background: str = Field(default="", description="公司常态化背景，注入 LLM Prompt")
+    created_at: str = Field(default="", description="ISO 8601 创建时间")
+    updated_at: str = Field(default="", description="ISO 8601 最后更新时间")
