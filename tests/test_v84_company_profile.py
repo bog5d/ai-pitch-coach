@@ -275,3 +275,98 @@ def test_detect_logical_conflict_invalid_json():
     from llm_judge import detect_logical_conflict
     result = detect_logical_conflict("背景内容", "not valid json {{{")
     assert result == []
+
+
+# ── Task 4: job_pipeline 透传 ────────────────────────────────────────────────
+
+def test_pipeline_passes_company_background_to_evaluate(tmp_path):
+    """run_pitch_file_job 将 company_background 透传给 evaluate_pitch。"""
+    from unittest.mock import patch
+    from pathlib import Path
+    from schema import TranscriptionWord, AnalysisReport, SceneAnalysis
+    import job_pipeline as jp
+
+    mock_words = [
+        TranscriptionWord(word_index=0, text="测试", start_time=0.0, end_time=1.0, speaker_id="S1")
+    ]
+    mock_report = AnalysisReport(
+        scene_analysis=SceneAnalysis(scene_type="测试", speaker_roles="测试"),
+        total_score=90,
+        risk_points=[],
+    )
+
+    params = jp.PitchFileJobParams(
+        transcription_json_path=tmp_path / "asr.json",
+        analysis_json_path=tmp_path / "analysis.json",
+        html_output_path=tmp_path / "report.html",
+        sensitive_words=[],
+        explicit_context=jp.build_explicit_context("01_机构路演", "测试项目", "张三"),
+        qa_text="",
+        company_background="ABC资本成立于2015年，专注早期投资",
+    )
+
+    with (
+        patch("job_pipeline.transcribe_audio", return_value=mock_words),
+        patch("job_pipeline.evaluate_pitch", return_value=mock_report) as mock_eval,
+        patch("job_pipeline.apply_asr_original_text_override", return_value=mock_report),
+    ):
+        audio = tmp_path / "test.wav"
+        audio.write_bytes(b"RIFF")
+        jp.run_pitch_file_job(audio, params, skip_html_export=True)
+
+    call_kwargs = mock_eval.call_args.kwargs
+    assert call_kwargs.get("company_background") == "ABC资本成立于2015年，专注早期投资"
+
+
+def test_pipeline_truncates_long_company_background(tmp_path):
+    """超过 8000 字的 company_background 在送 LLM 前被截断。"""
+    from unittest.mock import patch
+    from pathlib import Path
+    from schema import TranscriptionWord, AnalysisReport, SceneAnalysis
+    import job_pipeline as jp
+
+    long_bg = "Z" * 12_000
+    mock_words = [
+        TranscriptionWord(word_index=0, text="x", start_time=0.0, end_time=1.0, speaker_id="S1")
+    ]
+    mock_report = AnalysisReport(
+        scene_analysis=SceneAnalysis(scene_type="t", speaker_roles="t"),
+        total_score=100,
+        risk_points=[],
+    )
+
+    params = jp.PitchFileJobParams(
+        transcription_json_path=tmp_path / "asr.json",
+        analysis_json_path=tmp_path / "analysis.json",
+        html_output_path=tmp_path / "report.html",
+        sensitive_words=[],
+        explicit_context=jp.build_explicit_context("01_机构路演", "p", "i"),
+        qa_text="",
+        company_background=long_bg,
+    )
+
+    with (
+        patch("job_pipeline.transcribe_audio", return_value=mock_words),
+        patch("job_pipeline.evaluate_pitch", return_value=mock_report) as mock_eval,
+        patch("job_pipeline.apply_asr_original_text_override", return_value=mock_report),
+    ):
+        audio = tmp_path / "test.wav"
+        audio.write_bytes(b"RIFF")
+        jp.run_pitch_file_job(audio, params, skip_html_export=True)
+
+    sent_bg = mock_eval.call_args.kwargs.get("company_background", "")
+    assert len(sent_bg) <= 8_000
+
+
+def test_pipeline_default_company_background_empty(tmp_path):
+    """company_background 默认为空字符串，向后兼容现有调用方。"""
+    import job_pipeline as jp
+    params = jp.PitchFileJobParams(
+        transcription_json_path=tmp_path / "asr.json",
+        analysis_json_path=tmp_path / "analysis.json",
+        html_output_path=tmp_path / "report.html",
+        sensitive_words=[],
+        explicit_context=jp.build_explicit_context("01_机构路演", "p", "i"),
+        qa_text="",
+    )
+    assert params.company_background == ""

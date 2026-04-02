@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from llm_judge import evaluate_pitch
+from llm_judge import evaluate_pitch, truncate_company_background
 from report_builder import (
     HtmlExportOptions,
     apply_asr_original_text_override,
@@ -121,6 +121,8 @@ class PitchFileJobParams:
     qa_text: str
     model_choice: str = "deepseek"
     html_export_options: HtmlExportOptions | None = None
+    hot_words: list[str] | None = None
+    company_background: str = ""
 
 
 def run_pitch_file_job(
@@ -158,7 +160,11 @@ def run_pitch_file_job(
             )
     else:
         _line(f"⏱️ 正在提取音频特征：{audio_path.name}（耗时可能较长，请耐心等待）…")
-        words = transcribe_audio(audio_path, out_json_path=params.transcription_json_path)
+        words = transcribe_audio(
+            audio_path,
+            out_json_path=params.transcription_json_path,
+            hot_words=params.hot_words or None,
+        )
         char_est = sum(len(w.text or "") for w in words)
         _line(
             f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。正在执行商业机密脱敏打码…"
@@ -167,11 +173,15 @@ def run_pitch_file_job(
     _line(
         f"⏱️ {params.model_choice} 正在进行多维度 QA 对齐与痛点审查（结构化 JSON，最耗时一步）…"
     )
+    bg_use, bg_truncated = truncate_company_background(params.company_background or "")
+    if bg_truncated:
+        _line("⚠️ 公司背景超过 8000 字，已截取头部内容注入 Prompt。如需完整分析请精简档案内容。")
     report = evaluate_pitch(
         words_for_llm,
         model_choice=params.model_choice,
         explicit_context=params.explicit_context,
         qa_text=params.qa_text,
+        company_background=bg_use,
         on_notice=_line,
     )
     if skip_html_export:
