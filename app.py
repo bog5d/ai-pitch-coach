@@ -1,6 +1,6 @@
 """
 AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
-发版主线 V7.5（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+发版主线 V8.6（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 
 支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
