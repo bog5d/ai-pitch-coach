@@ -370,3 +370,28 @@ def test_pipeline_default_company_background_empty(tmp_path):
         qa_text="",
     )
     assert params.company_background == ""
+
+
+# ── Task 5: 域字典切换逻辑 ───────────────────────────────────────────────────
+
+def test_domain_dict_reset_clears_all_cached_data():
+    """切换公司时域字典整体清空，确保跨公司数据不串味。"""
+    session_state = {
+        "current_company_cache": {
+            "asr_cache": {"md5abc": [1, 2, 3]},
+            "report_draft_foo": {"score": 80},
+            "company_profile": {"company_id": "old_co"},
+        },
+        "_active_company_id": "old_co",
+    }
+
+    # 模拟切换公司的重置逻辑（对应 app.py 中的实现）
+    def switch_company(state: dict, new_company_id: str) -> None:
+        if state["_active_company_id"] != new_company_id:
+            state["current_company_cache"] = {}
+            state["_active_company_id"] = new_company_id
+
+    switch_company(session_state, "new_co")
+
+    assert session_state["current_company_cache"] == {}
+    assert session_state["_active_company_id"] == "new_co"

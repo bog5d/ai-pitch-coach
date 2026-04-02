@@ -67,7 +67,9 @@ from job_pipeline import (
     safe_fs_segment,
 )
 from sensitive_words import parse_sensitive_words
-from llm_judge import polish_manual_risk_point, refine_risk_point
+import company_profile as cp
+from schema import CompanyProfile
+from llm_judge import detect_logical_conflict, polish_manual_risk_point, refine_risk_point
 from transcriber import format_transcript_plain_by_speaker, transcribe_audio
 from report_builder import (
     HtmlExportOptions,
@@ -898,7 +900,100 @@ def main() -> None:
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
 
+    # V8.4 域字典初始化
+    if "current_company_cache" not in st.session_state:
+        st.session_state["current_company_cache"] = {}
+    if "_active_company_id" not in st.session_state:
+        st.session_state["_active_company_id"] = None
+
     with st.sidebar:
+        # ── V8.4 公司档案选择器 ─────────────────────────────────────────────────
+        st.markdown("### 🏢 公司档案")
+
+        companies = cp.list_companies()
+        company_options = {c.company_id: c.display_name for c in companies}
+        company_options["__new__"] = "➕ 新建公司"
+
+        selected_company_id = st.selectbox(
+            "选择公司",
+            options=list(company_options.keys()),
+            format_func=lambda k: company_options[k],
+            key="company_selector",
+            label_visibility="collapsed",
+        )
+
+        # 公司切换：整体清空域字典（铁律三：严禁遍历删除 UI-bound key）
+        if st.session_state["_active_company_id"] != selected_company_id:
+            st.session_state["current_company_cache"] = {}
+            st.session_state["_active_company_id"] = selected_company_id
+
+        # 新建公司
+        if selected_company_id == "__new__":
+            with st.expander("📝 填写新公司信息", expanded=True):
+                new_display = st.text_input("公司名称", key="new_co_display")
+                new_bg = st.text_area("公司背景（可选）", key="new_co_bg", height=100)
+                if st.button("💾 创建并选中", key="btn_create_co"):
+                    if new_display.strip():
+                        import re as _re, time as _time
+                        new_id = _re.sub(r"[^\w]", "_", new_display.strip().lower()) + f"_{int(_time.time())}"
+                        cp.save_company(CompanyProfile(
+                            company_id=new_id,
+                            display_name=new_display.strip(),
+                            background=new_bg.strip(),
+                        ))
+                        st.rerun()
+                    else:
+                        st.warning("请输入公司名称")
+            current_company_bg = ""
+            current_sniper_json = "[]"
+        else:
+            # 从域字典缓存加载公司档案（避免重复磁盘 IO）
+            cache = st.session_state["current_company_cache"]
+            if "company_profile" not in cache:
+                cache["company_profile"] = cp.load_company(selected_company_id)
+            profile = cache.get("company_profile")
+
+            with st.expander("📋 公司背景", expanded=False):
+                if profile:
+                    edited_bg = st.text_area(
+                        "背景内容",
+                        value=profile.background,
+                        height=120,
+                        key=f"bg_editor_{selected_company_id}",
+                        label_visibility="collapsed",
+                    )
+                    if st.button("💾 保存背景", key=f"btn_save_bg_{selected_company_id}"):
+                        cp.save_company(profile.model_copy(update={"background": edited_bg}))
+                        cache["company_profile"] = cp.load_company(selected_company_id)
+                        st.success("已保存")
+                else:
+                    st.caption("档案不存在或已损坏")
+
+            current_company_bg = profile.background if profile else ""
+            # 获取当前 session 的狙击清单 JSON（用于 logical_conflict 检测）
+            # 取第一个 batch 的狙击清单（如有），供冲突检测使用
+            current_sniper_json = st.session_state.get("batch_sniper_editor_0") or "[]"
+            if not isinstance(current_sniper_json, str):
+                import json as _json
+                try:
+                    current_sniper_json = _json.dumps(
+                        current_sniper_json.to_dict(orient="records") if hasattr(current_sniper_json, "to_dict") else [],
+                        ensure_ascii=False
+                    )
+                except Exception:
+                    current_sniper_json = "[]"
+
+            # logical_conflict 警告
+            if current_company_bg:
+                conflicts = detect_logical_conflict(current_company_bg, current_sniper_json)
+                if conflicts:
+                    with st.expander("⚠️ 背景与狙击目标潜在冲突", expanded=False):
+                        for w in conflicts:
+                            st.warning(w)
+
+        st.divider()
+        # ── 公司档案选择器结束 ────────────────────────────────────────────────────
+
         latest_draft_sid = _v7_latest_draft_session_id()
         if latest_draft_sid and not st.session_state.get("v3_review_stems"):
             st.info("检测到本地有未完成的审查草稿，可从下方恢复。")
@@ -1498,6 +1593,7 @@ def main() -> None:
                         model_choice="deepseek",
                         html_export_options=html_opts,
                         hot_words=hot_words,
+                        company_background=current_company_bg,
                     )
 
                     def _pipe_status(m: str) -> None:
