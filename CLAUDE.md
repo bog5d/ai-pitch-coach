@@ -87,15 +87,58 @@ def salvage_json(raw: str) -> dict | None:
 
 ---
 
+## 铁律五：测试 API 成本护盾（Mock 强制拦截）
+
+**绝对禁止**在自动化测试中消耗真实的 DeepSeek / ASR / DashScope API 额度：
+
+```python
+# ❌ 禁止：测试中调用真实外部 API（产生费用 + 测试不稳定）
+def test_something():
+    words = transcribe_audio(real_audio_file)   # 真实 ASR 调用，扣费！
+    report = evaluate_pitch(words, ...)          # 真实 LLM 调用，扣费！
+```
+
+**正确做法——Mock 强制拦截：**
+
+```python
+# ✅ 正确：在测试入口处拦截所有外部 IO，零 API 费用
+from unittest.mock import patch
+
+def test_pipeline_with_cache(tmp_path):
+    with (
+        patch("job_pipeline.transcribe_audio", return_value=mock_words),
+        patch("job_pipeline.evaluate_pitch", return_value=mock_report),
+        patch("job_pipeline.apply_asr_original_text_override", return_value=mock_report),
+    ):
+        words_out, report_out = run_pitch_file_job(
+            audio_path, params, skip_html_export=True, cached_words=None
+        )
+```
+
+**Mock namespace 必须与被测模块的 import 路径完全一致：**
+
+| 被测模块 | 正确 patch 路径 | 错误路径（勿用）|
+|----------|-----------------|-----------------|
+| `job_pipeline.py` 内的 `transcribe_audio` | `job_pipeline.transcribe_audio` | `transcriber.transcribe_audio` |
+| `job_pipeline.py` 内的 `evaluate_pitch` | `job_pipeline.evaluate_pitch` | `llm_judge.evaluate_pitch` |
+
+**集成测试规则**（需要真实 API 时）：
+- 必须标注 `@pytest.mark.integration`。
+- CI / 全量回归跑 `pytest -m "not integration"` 跳过。
+- 本地手动触发时明确告知主理人将产生费用，获得授权后方可执行。
+
+---
+
 ## 附：快速检查清单（改代码前过一遍）
 
 - [ ] 我是否已读过 `ARCHITECTURE.md` 对应章节？
-- [ ] 我是否先写了测试？
-- [ ] 我的 UI 代码中是否存在反向赋值 session_state？
-- [ ] 我的 JSON 解析是否用了安全截断而非正则修复？
+- [ ] 我是否先写了测试？（铁律二）
+- [ ] 我的测试是否全部使用了 Mock，未消耗真实 API？（铁律五）
+- [ ] 我的 UI 代码中是否存在反向赋值 session_state？（铁律三）
+- [ ] 我的 JSON 解析是否用了安全截断而非正则修复？（铁律四）
 - [ ] 改了 `schema.py` 字段后，是否同步了 Prompt、审查台、报告和测试？
 - [ ] 发版前：`build_release.py::CURRENT_VERSION`、白名单 txt、`.cursorrules` 三处是否对齐？
 
 ---
 
-*最后更新：V7.6 重构启动前，由主理人授权写入。*
+*最后更新：V7.6 收官后，铁律五增补，由主理人授权写入。*

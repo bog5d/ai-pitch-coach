@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_v76_asr_cache.py -v)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python -m pytest tests/*.py -v)",
+      "Bash(python -m pytest*)",
+      "Bash(python build_release.py)",
+      "Bash(git config*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git log*)",
+      "Bash(git status*)",
+      "Bash(git remote*)",
+      "Bash(git diff*)"
+    ]
+  }
+}
