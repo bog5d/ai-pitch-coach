@@ -154,3 +154,124 @@ def test_save_preserves_uuid(tmp_path):
     loaded = cp.load_company("u_test", profiles_dir=tmp_path)
     assert loaded is not None
     assert loaded.uuid == fixed_uuid
+
+
+# ── Task 3: llm_judge 截断 + Prompt 注入 + logical_conflict ─────────────────
+
+def test_truncate_company_background_under_limit():
+    """背景文字未超过 8000 字时原样返回，is_truncated=False。"""
+    from llm_judge import truncate_company_background
+    text = "A" * 100
+    result, truncated = truncate_company_background(text)
+    assert result == text
+    assert truncated is False
+
+
+def test_truncate_company_background_over_limit():
+    """背景文字超过 8000 字时截断并返回 is_truncated=True，结果长度 ≤ 8000。"""
+    from llm_judge import truncate_company_background
+    text = "B" * 10_000
+    result, truncated = truncate_company_background(text)
+    assert truncated is True
+    assert len(result) <= 8000
+
+
+def test_truncate_company_background_head_priority():
+    """截断时保留头部内容。"""
+    from llm_judge import truncate_company_background
+    text = "HEAD" + "X" * 10_000
+    result, _ = truncate_company_background(text)
+    assert result.startswith("HEAD")
+
+
+def test_build_system_prompt_includes_company_background():
+    """非空背景时 <COMPANY_BACKGROUND> 块出现在 Prompt 中。"""
+    from llm_judge import _build_system_prompt
+    prompt = _build_system_prompt(
+        schema_str="{}",
+        explicit_context=None,
+        qa_text="",
+        company_background="ABC资本成立于2015年",
+    )
+    assert "<COMPANY_BACKGROUND>" in prompt
+    assert "ABC资本成立于2015年" in prompt
+
+
+def test_build_system_prompt_empty_background_skips_block():
+    """空背景时 Prompt 中不出现 <COMPANY_BACKGROUND> 块。"""
+    from llm_judge import _build_system_prompt
+    prompt = _build_system_prompt(
+        schema_str="{}",
+        explicit_context=None,
+        qa_text="",
+        company_background="",
+    )
+    assert "<COMPANY_BACKGROUND>" not in prompt
+
+
+def test_build_system_prompt_background_after_knowledge_base():
+    """<COMPANY_BACKGROUND> 在 </KNOWLEDGE_BASE> 之后出现（权重顺序正确）。"""
+    from llm_judge import _build_system_prompt
+    prompt = _build_system_prompt(
+        schema_str="{}",
+        explicit_context=None,
+        qa_text="QA内容",
+        company_background="公司背景内容",
+    )
+    kb_end = prompt.index("</KNOWLEDGE_BASE>")
+    bg_start = prompt.index("<COMPANY_BACKGROUND>")
+    assert bg_start > kb_end
+
+
+def test_build_system_prompt_conflict_constraint_present():
+    """CONSTRAINTS 块中包含冲突仲裁规则关键词。"""
+    from llm_judge import _build_system_prompt
+    prompt = _build_system_prompt(
+        schema_str="{}",
+        explicit_context=None,
+        qa_text="",
+        company_background="背景",
+    )
+    # 冲突仲裁规则必须在 CONSTRAINTS 中
+    assert "COMPANY_BACKGROUND" in prompt
+    constraints_start = prompt.index("<CONSTRAINTS>")
+    constraints_end = prompt.index("</CONSTRAINTS>")
+    constraints_block = prompt[constraints_start:constraints_end]
+    assert "COMPANY_BACKGROUND" in constraints_block
+
+
+def test_detect_logical_conflict_empty_inputs():
+    """空输入返回空列表。"""
+    from llm_judge import detect_logical_conflict
+    assert detect_logical_conflict("", "[]") == []
+    assert detect_logical_conflict("背景", "") == []
+    assert detect_logical_conflict("", "") == []
+
+
+def test_detect_logical_conflict_no_conflict():
+    """狙击目标与背景无重叠时返回空列表。"""
+    from llm_judge import detect_logical_conflict
+    import json
+    snipers = json.dumps([{"quote": "某段话", "reason": "完全不同的主题"}])
+    result = detect_logical_conflict("公司专注早期投资成立于2015年", snipers)
+    assert isinstance(result, list)
+
+
+def test_detect_logical_conflict_detects_overlap():
+    """狙击目标 reason 关键词与背景内容重叠时返回非空警告列表。"""
+    from llm_judge import detect_logical_conflict
+    import json
+    # 背景说"资金用途明确"，狙击说"资金用途不一致"
+    background = "公司资金用途明确，专注主营业务投入，无分散资金风险。"
+    snipers = json.dumps([{"quote": "资金用途这块", "reason": "资金用途前后说法不一致"}])
+    result = detect_logical_conflict(background, snipers)
+    assert isinstance(result, list)
+    assert len(result) >= 1
+    assert any("资金用途" in w for w in result)
+
+
+def test_detect_logical_conflict_invalid_json():
+    """无效 JSON 时返回空列表，不抛异常。"""
+    from llm_judge import detect_logical_conflict
+    result = detect_logical_conflict("背景内容", "not valid json {{{")
+    assert result == []

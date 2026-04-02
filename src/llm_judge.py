@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 # V7.0：录音转写与 QA 补充材料字数池物理隔离
 MAX_TRANSCRIPT_CHARS = 80_000
 MAX_QA_CHARS = 30_000
+MAX_COMPANY_BG_CHARS = 8_000
 
 # OpenAI 兼容接口 completion 上限（按模型典型能力设安全值，避免默认过小导致 JSON 拦腰截断）
 MAX_COMPLETION_TOKENS_BY_MODEL: dict[str, int] = {
@@ -60,6 +62,66 @@ def truncate_qa_text(qa: str, max_chars: int = MAX_QA_CHARS) -> tuple[str, bool]
     head_n = inner // 2
     tail_n = inner - head_n
     return q[:head_n] + MIDDLE_OMIT_MARK + q[-tail_n:], True
+
+
+def truncate_company_background(bg: str, max_chars: int = MAX_COMPANY_BG_CHARS) -> tuple[str, bool]:
+    """
+    公司背景超出限制时截取头部（优先保留公司核心信息）。
+    返回 (处理后文本, 是否发生过截断)。
+    """
+    b = (bg or "").strip()
+    if len(b) <= max_chars:
+        return b, False
+    return b[:max_chars], True
+
+
+def detect_logical_conflict(company_background: str, sniper_targets_json: str) -> list[str]:
+    """
+    检测公司背景与狙击目标之间的潜在逻辑冲突（冲突报警机制）。
+    简单关键词重叠检测：若狙击 reason 中长度>2 的词片段出现在背景中，触发警告。
+    返回警告字符串列表；无冲突或输入为空时返回 []。
+    """
+    bg = (company_background or "").strip()
+    sj = (sniper_targets_json or "").strip()
+    if not bg or not sj:
+        return []
+    try:
+        snipers = json.loads(sj)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(snipers, list):
+        return []
+    warnings: list[str] = []
+    for item in snipers:
+        if not isinstance(item, dict):
+            continue
+        reason = str(item.get("reason", "")).strip()
+        if not reason:
+            continue
+        # 按常见分隔符拆词，取长度 > 2 的片段做关键词
+        fragments = re.split(r"[，,、。.；;\s]+", reason)
+        matched_frag: str = ""
+        for frag in fragments:
+            frag = frag.strip()
+            if len(frag) > 2 and frag in bg:
+                matched_frag = frag
+                break
+        # 如果分隔符拆词未命中，进一步用滑动窗口（步长3~8字）查找共现关键词
+        if not matched_frag:
+            for win in range(4, min(len(reason) + 1, 9)):
+                for start in range(0, len(reason) - win + 1):
+                    sub = reason[start:start + win]
+                    if sub in bg:
+                        matched_frag = sub
+                        break
+                if matched_frag:
+                    break
+        if matched_frag:
+            warnings.append(
+                f"潜在冲突：狙击目标「{reason[:30]}」中的关键词「{matched_frag}」出现在公司背景描述中，请确认口径一致性"
+            )
+    return warnings
+
 
 # 三巨头官方兼容 OpenAI 的路由配置
 ROUTER: dict[str, dict[str, str]] = {
@@ -309,11 +371,18 @@ def _build_system_prompt(
     schema_str: str,
     explicit_context: dict[str, Any] | None,
     qa_text: str,
+    company_background: str = "",
 ) -> str:
     ctx = _normalize_explicit_context(explicit_context)
     kb = (qa_text or "").strip()
     kb_block = kb if kb else "未提供参考QA知识库。"
     sniper_block = _format_sniper_block(ctx["sniper_targets_json"])
+    _bg_use = (company_background or "").strip()
+    _company_bg_block = (
+        f"<COMPANY_BACKGROUND>\n{_bg_use}\n</COMPANY_BACKGROUND>"
+        if _bg_use
+        else ""
+    )
 
     return f"""你是一位拥有15年一线投行经验的「顶级金牌路演教练」。你的唯一服务对象是【被访谈对象/路演发言人】。你正在复盘带有词级索引 [index] 的录音逐字稿，目的是帮助发言人提升话术应对能力。
 <DOMAIN_ANCHOR>
@@ -351,6 +420,7 @@ def _build_system_prompt(
 <KNOWLEDGE_BASE>
 {kb_block}
 </KNOWLEDGE_BASE>
+{_company_bg_block}
 <TASK>
 1【角色防错乱锚定（极度重要）】：你必须结合逐字稿中每个 `[index]` 词段的前后上下文，深度核对各段说话人（Speaker）身份与立场，再推断哪个是投资机构、哪个是被访谈方/发言人。
 - **核心纪律**：投资人通常是「抛出压力、质疑、要求数据验证」的一方；发言人通常是「解释业务、回答追问、组织逻辑应对」的一方。
@@ -396,6 +466,9 @@ def _build_system_prompt(
 - 【极度重要】：输出 start_word_index 和 end_word_index 时切忌只圈出错片段的几个词；必须向外扩展索引边界，包含投资人完整提问与创始人完整回答段落，使切割音频能呈现完整交锋语境。（**例外**：因 <TASK> 第 3 条「🎯 定向核实」单独提取的 RiskPoint 必须遵守该条中的**字面量锚定**与**约 60 秒内、单回合**纪律，禁止套用本条无边界扩展。）
 
 必须严格按照 JSON Schema 输出，start/end index 必须精确。
+
+【四、公司背景与本次指令冲突仲裁（COMPANY_BACKGROUND）】：
+- 若 SNIPER_TARGETS（狙击清单）与 COMPANY_BACKGROUND（公司常态化背景）存在矛盾，以 SNIPER_TARGETS 指令为准，并在该风险点的 deduction_reason 中注明差异。
 </CONSTRAINTS>
 <JSON_SCHEMA>
 {schema_str}
@@ -430,6 +503,7 @@ def evaluate_pitch(
     *,
     explicit_context: dict[str, Any] | None = None,
     qa_text: str = "",
+    company_background: str = "",
     on_notice: Callable[[str], None] | None = None,
 ) -> AnalysisReport:
     """
@@ -468,7 +542,7 @@ def evaluate_pitch(
         AnalysisReport.model_json_schema(),
         ensure_ascii=False,
     )
-    system_prompt = _build_system_prompt(schema_str, explicit_context, qa_use)
+    system_prompt = _build_system_prompt(schema_str, explicit_context, qa_use, company_background)
     user_prompt = (
         "以下是本场沟通转写（每个词前有 [索引]，请仅使用这些索引作为 start_word_index / end_word_index）：\n\n"
         f"{transcript}"
