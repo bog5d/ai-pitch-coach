@@ -4,6 +4,41 @@
 
 ---
 
+## [V8.4] — 2026-04-02 · 公司档案与上下文注入版
+
+### 新增
+
+#### 模块一：公司档案管理（`src/company_profile.py` 新模块）
+- **`.company_profiles/` JSON 存储**：每家公司对应独立 `.json` 文件，肉眼可读，支持手动兜底修改。
+- **原子写入**（`tmp + os.replace`）：防止崩溃产生损坏档案。
+- **CRUD 全集**：`list_companies`、`load_company`、`save_company`、`delete_company`，均支持 `profiles_dir` 参数（测试友好）。
+- **`uuid` 唯一标识符**：每个公司档案自动生成全局唯一 UUID（`uuid4`），用于跨系统追踪，可手动覆盖。
+
+#### 模块二：LLM Prompt 公司背景注入（`src/llm_judge.py`）
+- **`<COMPANY_BACKGROUND>` 注入块**：非空背景时自动插入 `</KNOWLEDGE_BASE>` 之后、`<TASK>` 之前，权重高于通用知识库、低于本次狙击指令。
+- **独立 8k 字数池**：`truncate_company_background` 函数头部优先截断，超限时 UI 黄字警告。
+- **冲突仲裁规则**：写入 `<CONSTRAINTS>` — `<SNIPER_TARGETS>` 与 `<COMPANY_BACKGROUND>` 矛盾时以前者为准，并在 `deduction_reason` 中注明差异。
+- **`logical_conflict` 冲突报警机制**：`detect_logical_conflict(background, sniper_json)` 检测背景与狙击目标的关键词重叠，返回警告列表。
+
+#### 模块三：状态隔离与 UI（`app.py`）
+- **域字典隔离**：`st.session_state['current_company_cache']` 作为公司级命名空间，切换公司时 `= {}` 整体清空，严禁遍历删除 UI-bound key（铁律三）。
+- **侧边栏公司选择器**：位于侧边栏最顶部，作为 session 最高作用域；支持从已有档案选择或新建公司。
+- **实时冲突警告**：若当前公司背景与已填写的狙击清单存在关键词重叠，侧边栏弹出 `⚠️ 背景与狙击目标潜在冲突` 折叠面板。
+
+#### 模块四：TDD 测试（`tests/test_v84_company_profile.py`）
+- 28 个测试覆盖：CompanyProfile 模型（5）、CRUD（8）、llm_judge 注入与冲突检测（11）、pipeline 透传（3）、域字典切换（1）。
+
+### 改动
+- `src/schema.py`：新增 `CompanyProfile` Pydantic 模型（含 `uuid` auto-factory）。
+- `src/llm_judge.py`：新增 `MAX_COMPANY_BG_CHARS`、`truncate_company_background`、`detect_logical_conflict`；`_build_system_prompt` 和 `evaluate_pitch` 新增 `company_background` 参数。
+- `src/job_pipeline.py`：`PitchFileJobParams` 新增 `company_background: str = ""`；`run_pitch_file_job` 截断 + 透传。
+- `app.py`：导入 `company_profile`、`CompanyProfile`、`detect_logical_conflict`；域字典初始化；侧边栏选择器；`PitchFileJobParams` 注入 `company_background`。
+
+### 全量回归
+- **≥102 passed**（较 V8.0 新增 28 个测试）
+
+---
+
 ## [V8.3] — 2026-04-02 · 生产级三大修复版
 
 ### 修复
@@ -147,4 +182,4 @@
 
 ---
 
-*最后更新：V7.6 发版，2026-04-02。*
+*最后更新：V8.4 发版，2026-04-02。*
