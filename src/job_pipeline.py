@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from llm_judge import evaluate_pitch, truncate_company_background
-from memory_engine import load_top_executive_memories_for_prompt
+from memory_engine import (
+    load_top_executive_memories_for_prompt,
+    record_executive_memory_prompt_hits,
+)
 from report_builder import (
     HtmlExportOptions,
     apply_asr_original_text_override,
@@ -187,6 +190,8 @@ def run_pitch_file_job(
         if mem_cid and _tag_ok
         else []
     )
+    if historical:
+        record_executive_memory_prompt_hits(mem_cid, mem_tag, historical)
     report = evaluate_pitch(
         words_for_llm,
         model_choice=params.model_choice,

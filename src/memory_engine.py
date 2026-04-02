@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import tempfile
+from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -27,6 +29,13 @@ _WIN_INVALID = '\\/:*?"<>|\n\r\t'
 # 防噪门：相对编辑距离 > 10% 或 绝对字数差 > 10 才进入 LLM 提炼
 _MEMORY_NOISE_RATIO_THRESHOLD = 0.10
 _MEMORY_NOISE_LEN_DIFF_THRESHOLD = 10
+
+
+def _iso_now_utc_z() -> str:
+    """UTC ISO8601，Z 后缀，便于日志与跨区一致。"""
+    return (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
 
 
 def default_store_dir() -> Path:
@@ -268,6 +277,7 @@ def capture_and_distill_diff(
     company_id: str,
     tag: str,
     *,
+    risk_type: str = "",
     store_dir: Path | None = None,
 ) -> ExecutiveMemory | None:
     """
@@ -284,7 +294,17 @@ def capture_and_distill_diff(
         from llm_judge import distill_executive_memory_from_diff
 
         mem = distill_executive_memory_from_diff(original, refined, tg)
-        mem = mem.model_copy(update={"tag": tg})
+        rt = (risk_type or "").strip()
+        if rt not in ("严重", "一般", "轻微"):
+            rt = rt[:20] if rt else ""
+        mem = mem.model_copy(
+            update={
+                "tag": tg,
+                "risk_type": rt,
+                "updated_at": _iso_now_utc_z(),
+                "hit_count": 0,
+            }
+        )
         append_executive_memory(cid, tg, mem, store_dir=store_dir)
         return mem
     except Exception:
@@ -294,3 +314,59 @@ def capture_and_distill_diff(
 
 def count_executive_memories_for_company(company_id: str, *, store_dir: Path | None = None) -> int:
     return len(list_all_executive_memories_for_company(company_id, store_dir=store_dir))
+
+
+def top_risk_type_counts_for_company(
+    company_id: str,
+    *,
+    limit: int = 3,
+    store_dir: Path | None = None,
+) -> list[tuple[str, int]]:
+    """
+    按 risk_type 聚合条数，降序取 Top N；空类型计入「未标注」。
+    供看板「高频雷区」与 pills / 进度条展示。
+    """
+    pairs = list_all_executive_memories_for_company(company_id, store_dir=store_dir)
+    c: Counter[str] = Counter()
+    for _, m in pairs:
+        rt = (m.risk_type or "").strip()
+        c[rt if rt else "未标注"] += 1
+    return c.most_common(max(0, limit))
+
+
+def record_executive_memory_prompt_hits(
+    company_id: str,
+    tag: str,
+    used: list[ExecutiveMemory],
+    *,
+    store_dir: Path | None = None,
+) -> None:
+    """
+    主评 Prompt 注入后：对本次选用的记忆条 hit_count+1 并刷新 updated_at（同 tag 桶内原地写回）。
+    """
+    if not used:
+        return
+    uid_hit = {m.uuid for m in used if getattr(m, "uuid", None)}
+    if not uid_hit:
+        return
+    items = load_executive_memories(company_id, tag, store_dir=store_dir)
+    if not items:
+        return
+    now = _iso_now_utc_z()
+    new_items: list[ExecutiveMemory] = []
+    changed = False
+    for m in items:
+        if m.uuid in uid_hit:
+            new_items.append(
+                m.model_copy(
+                    update={
+                        "hit_count": int(m.hit_count) + 1,
+                        "updated_at": now,
+                    }
+                )
+            )
+            changed = True
+        else:
+            new_items.append(m)
+    if changed:
+        save_executive_memories(company_id, tag, new_items, store_dir=store_dir)

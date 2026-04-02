@@ -13,7 +13,7 @@
 | 网关 | `src/audio_preprocess.py` | ≥10MB：`ffmpeg` 抽视频轨 + 16k 单声道 MP3；失败回退原文件 |
 | 编排 | `src/job_pipeline.py` | 转写（或 **`cached_words` 跳过 ASR**）→ 脱敏 → LLM（**V8.6** 可选 **`historical_memories` Top5**）→ 写 JSON；可选跳过 HTML |
 | 转写 | `src/transcriber.py` | 硅基流动优先、阿里云 DashScope 兜底；**V4 请求指数退避**；**V7.5** 厂商/自动 **speaker_id**，`format_transcript_plain_by_speaker` 人类可读导出 |
-| 评判 | `src/llm_judge.py` | DeepSeek/Kimi/Qwen **主评委**；**V8.6** **`haiku`** 仅用于错题提炼；**`<HISTORICAL_PROFILE>`**（**COMPANY_BACKGROUND** 之后）；**V6.2 量化扣分**；**狙击清单**；**V7.0 QA 分池**；**V7.5** `max_tokens`、**JSON 抢救**；**退避重试** |
+| 评判 | `src/llm_judge.py` | DeepSeek/Kimi/Qwen **主评委**；**V8.6.1** 错题提炼 **仅 DeepSeek**（与主底座一致）；**`<HISTORICAL_PROFILE>`**；**V6.2 量化扣分**；**狙击清单**；**V7.0 QA 分池**；**V7.5** `max_tokens`、**JSON 抢救**；**退避重试** |
 | 报告 | `src/report_builder.py` | **ffmpeg** 词级切片 → Base64 内嵌 HTML；**V7.2+** `apply_asr_original_text_override` **按索引物理覆写** `original_text`；**V7.1** 超长窗口 **保留末尾 180s** |
 | 契约 | `src/schema.py` | `AnalysisReport`、`RiskPoint`；**V8.6** **`ExecutiveMemory`**（错题本） |
 | 诊断 | `src/system_debug_log.py` | 统一 `debug.log`（可写根目录） |
@@ -34,7 +34,7 @@
 5. **不生成最终 HTML**；`app.py` 将 `report.model_dump()`（含 UI 用 `_rid`）与 `words` 写入 `st.session_state`：
    - `report_draft_{stem}`、**`v3_initial_report_{stem}`**（V8.6：AI 初稿快照，供锁定导出时 diff）、`words_{stem}`、`v3_ctx_{stem}`（含 **`company_id`**）、`v3_review_stems`
 6. **V7.0**：审查台每次渲染时由 `draft_manager.save_draft(session_id, …)` 将上述快照 **静默写入** `.drafts/`；冷启动且侧栏无在审任务时，可 **一键恢复** 最近草稿。
-7. 用户在审查台编辑后点击 **锁定** → `_v3_finalize_stem`：`copy.deepcopy` 汇总 widget → 校验 → **`apply_asr_original_text_override`** → 覆盖 JSON → `generate_html_report`（**V7.5**：JSON 与 HTML 的 `original_text` 均与 **ASR 词表 + 切片** 同源）。**V8.6**：成功后 **`_v86_harvest_finalize_if_needed`**：按 `_rid` 对齐初稿与终稿，**防噪门**通过后 **`distill_executive_memory_from_diff`（Haiku）** → **`memory_engine`** 追加落盘（失败仅打日志，不阻断导出）。
+7. 用户在审查台编辑后点击 **锁定** → `_v3_finalize_stem`：… **`generate_html_report`** … **V8.6**：成功后 **`_v86_harvest_finalize_if_needed`**：按 `_rid` 对齐初稿与终稿，**防噪门**通过后 **`distill_executive_memory_from_diff`（DeepSeek）** → **`memory_engine`** 追加落盘。**V8.6.1**：返回提炼条数；UI **`st.toast` / `st.success`** 反馈；记忆含 **`risk_type` / `updated_at` / `hit_count`**。
 
 ---
 
@@ -153,11 +153,11 @@
 |------|------|
 | 存储 | `get_writable_app_root()/.executive_memory/{safe_company_id}/{safe_tag}.json`，与 **公司档案 `company_id`**、**被访谈人 `interviewee`**（作 tag 桶）对齐 |
 | 防噪 | `memory_diff_noise_gate_passes`：相对 Levenshtein **>10%** 或 **\|Δ字数\|>10** 才调用提炼 LLM |
-| 提炼 | `llm_judge.distill_executive_memory_from_diff` → **`ROUTER["haiku"]`**，需 **`ANTHROPIC_API_KEY`**（未配置则捕获异常，静默跳过） |
-| 注入 | `job_pipeline` 在 **`memory_company_id` 非空且 interviewee 非空且非「未指定」** 时 `load_top_executive_memories_for_prompt(..., limit=5)`；`_format_historical_profile_block` 内再次 **weight 降序截断 5 条** |
+| 提炼 | `llm_judge.distill_executive_memory_from_diff` → **DeepSeek**（`DEEPSEEK_API_KEY`）；失败捕获，静默跳过 |
+| 注入 | `job_pipeline`：`load_top` → **`record_executive_memory_prompt_hits`**（磁盘 `hit_count`+`updated_at`）→ `evaluate_pitch`；**`_format_historical_profile_block`** 内再次 **weight 降序截断 5 条** |
 | 看板 | `list_all_executive_memories_for_company` + `delete_executive_memory_by_uuid` / `update_executive_memory_weight`；**禁止**用 `st.data_editor` 绑定整表再反向写 `session_state`（铁律三） |
 
-**接手调试清单**：收割未触发 → 查 `v3_ctx.company_id` 是否空（新建公司未选档案）、被访谈人是否为占位「未指定」、`v3_initial_report_{stem}` 是否存在；提炼不落盘 → 查 `.env` **ANTHROPIC** 与 `debug.log`；Prompt 未见历史 → 查 `memory_company_id` 与 **真实** `interviewee`（非「未指定」）。
+**接手调试清单**：收割未触发 → 查 `v3_ctx.company_id`、**非「未指定」** 访谈人、`v3_initial_report_{stem}`；提炼不落盘 → 查 **`DEEPSEEK_API_KEY`** 与 `debug.log`；命中不增 → 查 `record_executive_memory_prompt_hits` 与 tag 桶路径。
 
 ---
 

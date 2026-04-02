@@ -1,6 +1,6 @@
 """
 AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
-发版主线 V8.6（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+发版主线 V8.6.1（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 
 支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
@@ -97,19 +97,20 @@ def _v86_risk_point_harvest_blob(rp: dict) -> str:
     return "\n".join(parts).strip()
 
 
-def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> None:
-    """锁定导出成功后：初稿 vs 终稿差异达标则静默提炼入库（失败不影响主流程）。"""
+def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> int:
+    """锁定导出成功后：初稿 vs 终稿差异达标则静默提炼入库；返回新入库条数（失败不影响主流程）。"""
     ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
     cid = (ctx.get("company_id") or "").strip()
     if not cid:
-        return
+        return 0
     tag = (ctx.get("interviewee") or "").strip() or "default"
     if tag in ("未指定",):
-        return
+        return 0
     initial = st.session_state.get(f"v3_initial_report_{stem}")
     init_rps = (initial or {}).get("risk_points") or []
     init_map = {rp.get("_rid"): rp for rp in init_rps if isinstance(rp, dict) and rp.get("_rid")}
     fin_rps = (payload or {}).get("risk_points") or []
+    harvested = 0
     try:
         from memory_engine import capture_and_distill_diff
 
@@ -120,11 +121,14 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> None:
             old = init_map.get(rid, {}) if rid else {}
             ob = _v86_risk_point_harvest_blob(old if isinstance(old, dict) else {})
             nb = _v86_risk_point_harvest_blob(frp)
-            capture_and_distill_diff(ob, nb, cid, tag)
+            risk_lv = str(frp.get("risk_level") or "").strip()
+            if capture_and_distill_diff(ob, nb, cid, tag, risk_type=risk_lv):
+                harvested += 1
     except Exception:
         logging.getLogger("ai_pitch_coach.ui").warning(
             "V8.6 静默收割异常（已忽略，不影响导出）", exc_info=True
         )
+    return harvested
 
 
 def _v86_render_executive_dashboard(company_id: str) -> None:
@@ -133,6 +137,7 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
         count_executive_memories_for_company,
         delete_executive_memory_by_uuid,
         list_all_executive_memories_for_company,
+        top_risk_type_counts_for_company,
         update_executive_memory_weight,
     )
 
@@ -153,15 +158,37 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
         st.info("暂无记忆。完成批次分析并在审查台锁定导出后，系统会自动提炼并入库。")
         return
 
+    top3 = top_risk_type_counts_for_company(company_id, limit=3)
+    st.subheader("🔥 高频雷区（按记忆条数 · 风险等级）")
+    st.caption("来自各条记忆的 `risk_type`（严重 / 一般 / 轻微）聚合，助您一眼看到管理层通病。")
+    if top3:
+        mx = max(c for _, c in top3) or 1
+        pc = st.columns(3)
+        for i, (label, cnt) in enumerate(top3):
+            with pc[i]:
+                st.metric(f"{label}", f"{cnt} 条")
+                st.progress(min(1.0, cnt / mx))
+        labels = [f"{lab} · {n}条" for lab, n in top3]
+        if hasattr(st, "pills"):
+            try:
+                st.pills("Top3 雷区标签", labels, key=f"v861_risk_pills_{company_id}")
+            except Exception:
+                pass
+    else:
+        st.caption("（暂无 risk_type 统计）")
+
     rows = []
     for stem_tag, mem in pairs:
         rows.append(
             {
                 "文件桶": stem_tag,
                 "标签": mem.tag,
+                "风险类型": mem.risk_type or "—",
                 "易错要点": mem.raw_text,
                 "标准口径": mem.correction,
                 "权重": float(mem.weight),
+                "命中次数": int(mem.hit_count),
+                "最后触发": mem.updated_at or "—",
                 "uuid": mem.uuid,
             }
         )
@@ -422,7 +449,7 @@ def _v3_build_report_dict_from_widgets(stem: str) -> dict:
     }
 
 
-def _v3_finalize_stem(stem: str) -> Path:
+def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     ctx = st.session_state[f"v3_ctx_{stem}"]
     # 深拷贝后再校验；JSON 正文保持审查台明文，仅外发 HTML 文件名做 DLP 脱敏
     payload = copy.deepcopy(_v3_build_report_dict_from_widgets(stem))
@@ -459,8 +486,8 @@ def _v3_finalize_stem(stem: str) -> Path:
     )
     final = html_path.resolve()
     st.session_state[f"v46_preview_html_{stem}"] = str(final)
-    _v86_harvest_finalize_if_needed(stem, payload)
-    return final
+    harvest_n = _v86_harvest_finalize_if_needed(stem, payload)
+    return final, harvest_n
 
 
 def _v3_render_single_stem_review(stem: str) -> None:
@@ -704,11 +731,22 @@ def _v3_render_single_stem_review(stem: str) -> None:
         key=f"v3finalize_{stem}",
     ):
         try:
-            final_html = _v3_finalize_stem(stem)
+            final_html, harvest_n = _v3_finalize_stem(stem)
             st.success(
                 f"已锁定：**{stem}** → JSON 与 HTML 已写入归档目录。\n"
                 f"HTML（脱敏文件名）：`{final_html.name}`"
             )
+            if harvest_n > 0:
+                ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
+                iv = (ctx.get("interviewee") or "").strip() or "该高管"
+                msg = (
+                    f"🌱 [收割完成] 系统已为 {iv} 自动提炼 {harvest_n} 条新经验，飞轮运转中！"
+                )
+                toast_fn = getattr(st, "toast", None)
+                if callable(toast_fn):
+                    toast_fn(msg, icon="🌱")
+                else:
+                    st.success(msg)
         except Exception as ex:
             st.error(f"导出失败：{ex!s}")
 

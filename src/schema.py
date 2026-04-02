@@ -97,3 +97,16 @@ class ExecutiveMemory(BaseModel):
         ge=0.0,
         description="记忆强度或召回权重，供后续排序/衰减使用",
     )
+    risk_type: str = Field(
+        default="",
+        description="来源风险点等级（严重/一般/轻微），供看板「高频雷区」聚合；空表示未标注",
+    )
+    updated_at: str = Field(
+        default="",
+        description="ISO 8601 最后触发时间：创建时写入，被主评 Prompt 命中时刷新",
+    )
+    hit_count: int = Field(
+        default=0,
+        ge=0,
+        description="被注入主评 Prompt 的累计命中次数，供时间衰减与僵尸清理",
+    )

@@ -42,8 +42,6 @@ MAX_COMPLETION_TOKENS_BY_MODEL: dict[str, int] = {
     "deepseek-chat": 8192,
     "moonshot-v1-32k": 8192,
     "qwen-max": 8192,
-    "claude-3-5-haiku-20241022": 2048,
-    "claude-3-5-haiku-latest": 2048,
 }
 
 MIDDLE_OMIT_MARK = "\n...[内容过长，系统已智能省略中间部分]...\n"
@@ -142,15 +140,9 @@ ROUTER: dict[str, dict[str, str]] = {
         "api_key_env": "DASHSCOPE_API_KEY",
         "model": "qwen-max",
     },
-    # V8.6 错题本静默提炼：Anthropic OpenAI 兼容端点（需 ANTHROPIC_API_KEY）
-    "haiku": {
-        "base_url": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "model": os.getenv("ANTHROPIC_MEMORY_MODEL", "claude-3-5-haiku-20241022"),
-    },
 }
 
-# 主评委模型（evaluate_pitch / refine 等）；不含 haiku，避免误选
+# 主评委与错题提炼（V8.6.1 起统一 DeepSeek 通道，不引入第二家闭源底座）
 JUDGE_MODEL_KEYS: frozenset[str] = frozenset({"deepseek", "kimi", "qwen"})
 
 DISPLAY_NAME = {
@@ -671,12 +663,10 @@ def distill_executive_memory_from_diff(
     original: str,
     refined: str,
     tag: str,
-    *,
-    model_key: str = "haiku",
 ) -> ExecutiveMemory:
     """
-    V8.6：对比改写前后文本，提炼可复用的「易错要点 + 标准口径」写入错题本。
-    使用轻量 Haiku（OpenAI 兼容端点）；调用方须已通过防噪门。
+    V8.6 / V8.6.1：对比改写前后文本，提炼可复用的「易错要点 + 标准口径」写入错题本。
+    **固定走 DeepSeek**（`deepseek-chat`），与主评委同一底座；调用方须已通过防噪门。
     """
     o = (original or "").strip()
     r = (refined or "").strip()
@@ -729,8 +719,8 @@ JSON 形状约束：
         "请输出 JSON。"
     )
 
-    client, model_name = _make_client(model_key)
-    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 2048)
+    client, model_name = _make_client("deepseek")
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
 
     def _chat_once():
         return client.chat.completions.create(
@@ -748,7 +738,7 @@ JSON 形状约束：
         response = run_with_backoff(
             _chat_once,
             logger=logger,
-            operation=f"distill_executive_memory_from_diff ({model_key})",
+            operation="distill_executive_memory_from_diff (deepseek)",
         )
     except APIError as e:
         raise RuntimeError(f"记忆提炼 LLM API 失败: {e}") from e

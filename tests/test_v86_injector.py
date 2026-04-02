@@ -106,6 +106,7 @@ def test_pipeline_passes_historical_memories_to_evaluate(tmp_path):
             "job_pipeline.load_top_executive_memories_for_prompt",
             return_value=[mem],
         ) as mock_load,
+        patch("job_pipeline.record_executive_memory_prompt_hits") as mock_rec,
     ):
         audio = tmp_path / "t.wav"
         audio.write_bytes(b"RIFF")
@@ -114,6 +115,7 @@ def test_pipeline_passes_historical_memories_to_evaluate(tmp_path):
     mock_load.assert_called_once()
     assert mock_load.call_args[0][0] == "co1"
     assert mock_load.call_args[0][1] == "张三"
+    mock_rec.assert_called_once_with("co1", "张三", [mem])
     assert mock_eval.call_args.kwargs.get("historical_memories") == [mem]
 
 
