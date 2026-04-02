@@ -180,9 +180,11 @@ def run_pitch_file_job(
         _line("⚠️ 公司背景超过 8000 字，已截取头部内容注入 Prompt。如需完整分析请精简档案内容。")
     mem_cid = (params.memory_company_id or "").strip()
     mem_tag = (params.explicit_context or {}).get("interviewee", "").strip()
+    # 「未指定」为占位，勿与真实高管标签混桶
+    _tag_ok = bool(mem_tag) and mem_tag != "未指定"
     historical = (
         load_top_executive_memories_for_prompt(mem_cid, mem_tag, limit=5)
-        if mem_cid and mem_tag
+        if mem_cid and _tag_ok
         else []
     )
     report = evaluate_pitch(

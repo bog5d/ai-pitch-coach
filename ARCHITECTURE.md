@@ -154,10 +154,10 @@
 | 存储 | `get_writable_app_root()/.executive_memory/{safe_company_id}/{safe_tag}.json`，与 **公司档案 `company_id`**、**被访谈人 `interviewee`**（作 tag 桶）对齐 |
 | 防噪 | `memory_diff_noise_gate_passes`：相对 Levenshtein **>10%** 或 **\|Δ字数\|>10** 才调用提炼 LLM |
 | 提炼 | `llm_judge.distill_executive_memory_from_diff` → **`ROUTER["haiku"]`**，需 **`ANTHROPIC_API_KEY`**（未配置则捕获异常，静默跳过） |
-| 注入 | `job_pipeline` 在 **`memory_company_id` 与 interviewee 均非空** 时 `load_top_executive_memories_for_prompt(..., limit=5)`；`_format_historical_profile_block` 内再次 **weight 降序截断 5 条** |
+| 注入 | `job_pipeline` 在 **`memory_company_id` 非空且 interviewee 非空且非「未指定」** 时 `load_top_executive_memories_for_prompt(..., limit=5)`；`_format_historical_profile_block` 内再次 **weight 降序截断 5 条** |
 | 看板 | `list_all_executive_memories_for_company` + `delete_executive_memory_by_uuid` / `update_executive_memory_weight`；**禁止**用 `st.data_editor` 绑定整表再反向写 `session_state`（铁律三） |
 
-**接手调试清单**：收割未触发 → 查 `v3_ctx.company_id` 是否空（新建公司未选档案）、`v3_initial_report_{stem}` 是否存在；提炼不落盘 → 查 `.env` **ANTHROPIC** 与 `debug.log`；Prompt 未见历史 → 查 `PitchFileJobParams.memory_company_id` 与 `explicit_context["interviewee"]`。
+**接手调试清单**：收割未触发 → 查 `v3_ctx.company_id` 是否空（新建公司未选档案）、被访谈人是否为占位「未指定」、`v3_initial_report_{stem}` 是否存在；提炼不落盘 → 查 `.env` **ANTHROPIC** 与 `debug.log`；Prompt 未见历史 → 查 `memory_company_id` 与 **真实** `interviewee`（非「未指定」）。
 
 ---
 

@@ -10,7 +10,7 @@
 |------|---------------------------|
 | **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V8.6**），纯净包目录名随其变化。 |
 | **能力代际** | **V7.5**：按说话人文字稿、狙击清单、JSON 截断抢救、`original_text` 物理覆写等。**V7.6**：**ASR 会话内缓存** + **狙击表双 Key**。**V8.0**：**磁盘 ASR 缓存**、热词、`refine`/`polish`。**V8.4**：公司档案与 `<COMPANY_BACKGROUND>`。**V8.6**：**高管错题本**（`memory_engine.py` + `ExecutiveMemory`）、防噪静默收割、`<HISTORICAL_PROFILE>` Top5 注入、`haiku` 提炼（`ANTHROPIC_API_KEY`）、侧栏 **高管数字记忆库** Dashboard。 |
-| **回归测试** | `pytest tests/` → 当前全量 **126 passed**（含 `test_v86_*` 等）。 |
+| **回归测试** | `pytest tests/` → 当前全量 **127 passed**（含 `test_v86_*` 等）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 

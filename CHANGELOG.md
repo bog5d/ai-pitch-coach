@@ -14,7 +14,7 @@
 - **`src/memory_engine.py`**：按 `company_id` 子目录 + `tag` JSON 桶原子落盘；**防噪门**（相对编辑距离 >10% 或字数差 >10 才进入提炼）；`capture_and_distill_diff`、`append` / `delete` / `update_executive_memory_weight`、全公司枚举与计数；兼容早期 `_default` 扁平遗留文件。
 - **`distill_executive_memory_from_diff`**（`src/llm_judge.py`）：路由键 **`haiku`**（`ANTHROPIC_API_KEY`，OpenAI 兼容端点）；输出结构化记忆字段。
 - **`<HISTORICAL_PROFILE>` Prompt 块**：紧随 `<COMPANY_BACKGROUND>` 之后；`_format_historical_profile_block` 内二次按 **weight 降序截断 Top 5**，防止 Token 爆炸。
-- **`PitchFileJobParams.memory_company_id`** + **`evaluate_pitch(..., historical_memories=)`**：流水线在「公司 ID + interviewee 均非空」时加载 Top 记忆并注入。
+- **`PitchFileJobParams.memory_company_id`** + **`evaluate_pitch(..., historical_memories=)`**：流水线在「公司 ID + interviewee 均非空且非占位 **未指定**」时加载 Top 记忆并注入。
 - **`app.py`**：`v3_initial_report_{stem}` 初稿快照；`v3_ctx_{stem}.company_id`；锁定成功 `_v86_harvest_finalize_if_needed`；侧栏 **📊 高管数字记忆库** + 独立 Dashboard（指标、清单、`st.dataframe`、删除/调权重）；**不**使用 `data_editor` 反向写 session，避免铁律三风险。
 - **测试**：`tests/test_v86_memory_engine.py`、`test_v86_harvester.py`、`test_v86_injector.py`（含 pipeline 透传）；全量 **Mock**，零真实 LLM/ASR。
 
@@ -24,7 +24,7 @@
 
 ### 全量回归
 
-- **126 passed**
+- **127 passed**
 
 ---
 

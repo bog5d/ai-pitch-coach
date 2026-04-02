@@ -104,6 +104,8 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> None:
     if not cid:
         return
     tag = (ctx.get("interviewee") or "").strip() or "default"
+    if tag in ("未指定",):
+        return
     initial = st.session_state.get(f"v3_initial_report_{stem}")
     init_rps = (initial or {}).get("risk_points") or []
     init_map = {rp.get("_rid"): rp for rp in init_rps if isinstance(rp, dict) and rp.get("_rid")}

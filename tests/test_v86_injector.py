@@ -117,6 +117,45 @@ def test_pipeline_passes_historical_memories_to_evaluate(tmp_path):
     assert mock_eval.call_args.kwargs.get("historical_memories") == [mem]
 
 
+def test_pipeline_skips_memory_when_interviewee_placeholder(tmp_path):
+    """interviewee 为「未指定」时不应加载记忆（避免全批次混桶）。"""
+    from unittest.mock import patch
+
+    import job_pipeline as jp
+    from schema import AnalysisReport, SceneAnalysis, TranscriptionWord
+
+    mock_words = [
+        TranscriptionWord(word_index=0, text="x", start_time=0.0, end_time=1.0, speaker_id="S1")
+    ]
+    mock_report = AnalysisReport(
+        scene_analysis=SceneAnalysis(scene_type="t", speaker_roles="t"),
+        total_score=100,
+        risk_points=[],
+    )
+    ctx = jp.build_explicit_context("01_机构路演", "项目", "未指定")
+    params = jp.PitchFileJobParams(
+        transcription_json_path=tmp_path / "a.json",
+        analysis_json_path=tmp_path / "b.json",
+        html_output_path=tmp_path / "c.html",
+        sensitive_words=[],
+        explicit_context=ctx,
+        qa_text="",
+        memory_company_id="co1",
+    )
+
+    with (
+        patch("job_pipeline.transcribe_audio", return_value=mock_words),
+        patch("job_pipeline.evaluate_pitch", return_value=mock_report),
+        patch("job_pipeline.apply_asr_original_text_override", return_value=mock_report),
+        patch("job_pipeline.load_top_executive_memories_for_prompt") as mock_load,
+    ):
+        audio = tmp_path / "t.wav"
+        audio.write_bytes(b"RIFF")
+        jp.run_pitch_file_job(audio, params, skip_html_export=True)
+
+    mock_load.assert_not_called()
+
+
 def test_pipeline_skips_memory_load_when_company_empty(tmp_path):
     from unittest.mock import patch
 
