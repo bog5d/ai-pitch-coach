@@ -1,4 +1,4 @@
-# AI 路演教练 — 架构与数据流（V3.1 / V4.0 / V6.2 / V7.0 / V7.2 / V7.5 / V7.6）
+# AI 路演教练 — 架构与数据流（V3.1 … V8.6）
 
 本文档供后续开发者与 AI 接管时快速建立心智模型：**模块职责、数据流、人机协同与商业级防护**。
 
@@ -8,14 +8,14 @@
 
 | 层级 | 组件 | 职责 |
 |------|------|------|
-| UI | `app.py`（Streamlit） | API 配置、按录音上下文、**V6.2 智能音频网关**（`st.status` + `smart_compress_media`）、触发 `job_pipeline`、**V3 审查台**（`session_state`）、**V7.0 草稿**与静默落盘、**V7.1「仅提取文字稿」**（V7.5 按说话人分段）、**V7.5 `st.data_editor` 狙击清单**、**V7.6 双 Key 隔离法** + **ASR 内存缓存**、锁定后 `generate_html_report` |
+| UI | `app.py`（Streamlit） | API、Workspace、**V6.2 音频网关**、触发 `job_pipeline`、**V3 审查台**、**V7.0 草稿**、**仅提取文字稿**（按说话人分段）；**V7.6** 狙击表 **双 Key** + **`asr_cache`**；**V8.0** **`disk_asr_cache`**、热词、`refine`/`polish`；**V8.4** 公司档案；**V8.6** **高管数字记忆库**、初稿快照、静默收割；锁定后 `generate_html_report` |
 | 草稿 | `src/draft_manager.py` | **本地草稿静默持久化**：可写根下隐藏目录 `.drafts/`，`temp_*.json` → `os.replace` 原子落盘为 `draft_*.json`；`load_draft` / `list_available_drafts` 供断线恢复 |
 | 网关 | `src/audio_preprocess.py` | ≥10MB：`ffmpeg` 抽视频轨 + 16k 单声道 MP3；失败回退原文件 |
-| 编排 | `src/job_pipeline.py` | 转写 → 脱敏 → LLM → 写 JSON；可选跳过 HTML（供审查后再导出） |
+| 编排 | `src/job_pipeline.py` | 转写（或 **`cached_words` 跳过 ASR**）→ 脱敏 → LLM（**V8.6** 可选 **`historical_memories` Top5**）→ 写 JSON；可选跳过 HTML |
 | 转写 | `src/transcriber.py` | 硅基流动优先、阿里云 DashScope 兜底；**V4 请求指数退避**；**V7.5** 厂商/自动 **speaker_id**，`format_transcript_plain_by_speaker` 人类可读导出 |
-| 评判 | `src/llm_judge.py` | DeepSeek/Kimi/Qwen 路由；**V6.2 量化扣分引擎**；**结构化狙击清单**（`sniper_targets_json`→CONTEXT）；**V7.0 QA 分池**；**V7.1 定向核实字面锚定 + 约 60s 纪律**；**V7.2+ 场记式 `original_text`**；**V7.5** `max_tokens`、**截断 JSON 抢救**；超限 **黄字**；**退避重试** |
+| 评判 | `src/llm_judge.py` | DeepSeek/Kimi/Qwen **主评委**；**V8.6** **`haiku`** 仅用于错题提炼；**`<HISTORICAL_PROFILE>`**（**COMPANY_BACKGROUND** 之后）；**V6.2 量化扣分**；**狙击清单**；**V7.0 QA 分池**；**V7.5** `max_tokens`、**JSON 抢救**；**退避重试** |
 | 报告 | `src/report_builder.py` | **ffmpeg** 词级切片 → Base64 内嵌 HTML；**V7.2+** `apply_asr_original_text_override` **按索引物理覆写** `original_text`；**V7.1** 超长窗口 **保留末尾 180s** |
-| 契约 | `src/schema.py` | `AnalysisReport`、`RiskPoint`（含 **`score_deduction`**、`deduction_reason`、`is_manual_entry` 等） |
+| 契约 | `src/schema.py` | `AnalysisReport`、`RiskPoint`；**V8.6** **`ExecutiveMemory`**（错题本） |
 | 诊断 | `src/system_debug_log.py` | 统一 `debug.log`（可写根目录） |
 | 退避 | `src/retry_policy.py` | 429 / 502–504 与网络类错误：**2s / 4s / 8s**，最多 4 次尝试 |
 | 清理 | `src/garbage_collector.py` | 删除 **>7 天** 的 `*_transcription.json` / `*_analysis_report.json`；**永不删** `.html` 与音频 |
@@ -28,13 +28,13 @@
 2. **V6.2 智能音频网关**：`st.status` 汇报体积；≥10MB 时 `smart_compress_media` → 可选落地 `{stem}_v62_asr_gateway.mp3`，`run_pitch_file_job` 使用该路径；否则直通原文件。
 3. **V6.2 量化扣分引擎**：LLM 为每个 `risk_points[]` 输出 `score_deduction`，`total_score` 须与「100 − Σ扣分」一致（由 Prompt + Schema 约束）。
 4. `run_pitch_file_job(..., skip_html_export=True)`（审查台模式）：
-   - `transcribe_audio` → 词列表 + `*_transcription.json`
+   - 若传入 **`cached_words`**：`transcribe_audio` **跳过**，仍写入 `*_transcription.json`；否则 `transcribe_audio` → 词列表 + `*_transcription.json`
    - `mask_words_for_llm` → 送 LLM 的脱敏词列表
    - `evaluate_pitch` → `AnalysisReport` → **`apply_asr_original_text_override`** → `*_analysis_report.json`（**V7.5**：落盘即干净 `original_text`）
 5. **不生成最终 HTML**；`app.py` 将 `report.model_dump()`（含 UI 用 `_rid`）与 `words` 写入 `st.session_state`：
-   - `report_draft_{stem}`、`words_{stem}`、`v3_ctx_{stem}`、`v3_review_stems`
+   - `report_draft_{stem}`、**`v3_initial_report_{stem}`**（V8.6：AI 初稿快照，供锁定导出时 diff）、`words_{stem}`、`v3_ctx_{stem}`（含 **`company_id`**）、`v3_review_stems`
 6. **V7.0**：审查台每次渲染时由 `draft_manager.save_draft(session_id, …)` 将上述快照 **静默写入** `.drafts/`；冷启动且侧栏无在审任务时，可 **一键恢复** 最近草稿。
-7. 用户在审查台编辑后点击 **锁定** → `_v3_finalize_stem`：`copy.deepcopy` 汇总 widget → 校验 → **`apply_asr_original_text_override`** → 覆盖 JSON → `generate_html_report`（**V7.5**：JSON 与 HTML 的 `original_text` 均与 **ASR 词表 + 切片** 同源）。
+7. 用户在审查台编辑后点击 **锁定** → `_v3_finalize_stem`：`copy.deepcopy` 汇总 widget → 校验 → **`apply_asr_original_text_override`** → 覆盖 JSON → `generate_html_report`（**V7.5**：JSON 与 HTML 的 `original_text` 均与 **ASR 词表 + 切片** 同源）。**V8.6**：成功后 **`_v86_harvest_finalize_if_needed`**：按 `_rid` 对齐初稿与终稿，**防噪门**通过后 **`distill_executive_memory_from_diff`（Haiku）** → **`memory_engine`** 追加落盘（失败仅打日志，不阻断导出）。
 
 ---
 
@@ -42,7 +42,9 @@
 
 - **草稿键**：`report_draft_{stem}`（dict，对齐 `AnalysisReport` 字段 + `_rid`）。
 - **转写键**：`words_{stem}`（list of dict，词级时间戳）。
-- **上下文键**：`v3_ctx_{stem}`（音频路径、JSON/HTML 路径、水印、脱敏选项）。
+- **上下文键**：`v3_ctx_{stem}`（音频路径、JSON/HTML 路径、水印、脱敏选项、**`company_id`**）。
+- **V8.6 初稿快照键**：`v3_initial_report_{stem}`（与 `report_draft_{stem}` 同形；恢复草稿时若缺失则用当前 draft 补一份，避免误把整个草稿当作「改动」收割）。
+- **V8.6 看板模式**：`v86_dashboard_mode`（bool）；为真时主区仅渲染记忆库，`st.stop()` 截断后续批次 UI，**不改变**公司选择器与域字典协议。
 - **深拷贝**：锁定导出前必须使用 `copy.deepcopy`，避免 Streamlit 重跑引用污染。
 
 ---
@@ -95,11 +97,11 @@
 
 - `pytest tests/`：含 `job_pipeline`、`extreme_cases`、`garbage_collector`、`test_v72_backend_override`（V7.2 覆写毒药/越界压测）、**`test_v75_formatter`**（按说话人分段 / 无 `[0]` 式导出）、**`test_v75_json_salvage`**（截断 JSON 抢救）、**`test_v76_asr_cache`**（V7.6 缓存命中 / 跳过 ASR / 落盘一致性，9 case）等。
 - 转写/LLM 集成测试以 mock 为主，避免外网依赖。
-- 全量回归：**48 passed**（截至 V7.6）。
+- 全量回归：**74 passed**（截至 V8.0，以 `pytest tests/` 为准）。
 
 ---
 
-*文档版本：V7.6 · 与 app.py 当前行为对齐。*
+*文档版本：V8.0 · 与 app.py / `job_pipeline` 当前行为对齐。*
 
 ---
 
@@ -123,7 +125,9 @@
 ```
 
 缓存键：`hashlib.md5(文件内容字节).hexdigest()`（32 位十六进制）。
-缓存生命周期：与当前 Streamlit `session_state` 绑定，浏览器刷新或重启后清空（内存级）。
+
+- **会话级**：`st.session_state["asr_cache"][hash]`，浏览器刷新或重启进程后清空。
+- **磁盘级（V8.0）**：`src/disk_asr_cache.py` → 可写根下 **`.asr_cache/{hash}.json`**（原子写入）；`app.py` 在内存未命中时可加载磁盘，生成成功后回写磁盘，实现跨会话复用。
 
 ### 8.2 UI 状态保护协议（Streamlit 双 Key 隔离法）
 
@@ -142,6 +146,18 @@
 2. `del session_state[ed_key]`（若存在）→ 强制 widget 以新 `init_key` 数据重新初始化。
 
 读取用户编辑结果：优先 `session_state.get(ed_key)`（widget 托管），兜底 `session_state.get(init_key)`。
+
+### 8.3 V8.6 高管全息记忆（数据飞轮）
+
+| 环节 | 行为 |
+|------|------|
+| 存储 | `get_writable_app_root()/.executive_memory/{safe_company_id}/{safe_tag}.json`，与 **公司档案 `company_id`**、**被访谈人 `interviewee`**（作 tag 桶）对齐 |
+| 防噪 | `memory_diff_noise_gate_passes`：相对 Levenshtein **>10%** 或 **\|Δ字数\|>10** 才调用提炼 LLM |
+| 提炼 | `llm_judge.distill_executive_memory_from_diff` → **`ROUTER["haiku"]`**，需 **`ANTHROPIC_API_KEY`**（未配置则捕获异常，静默跳过） |
+| 注入 | `job_pipeline` 在 **`memory_company_id` 与 interviewee 均非空** 时 `load_top_executive_memories_for_prompt(..., limit=5)`；`_format_historical_profile_block` 内再次 **weight 降序截断 5 条** |
+| 看板 | `list_all_executive_memories_for_company` + `delete_executive_memory_by_uuid` / `update_executive_memory_weight`；**禁止**用 `st.data_editor` 绑定整表再反向写 `session_state`（铁律三） |
+
+**接手调试清单**：收割未触发 → 查 `v3_ctx.company_id` 是否空（新建公司未选档案）、`v3_initial_report_{stem}` 是否存在；提炼不落盘 → 查 `.env` **ANTHROPIC** 与 `debug.log`；Prompt 未见历史 → 查 `PitchFileJobParams.memory_company_id` 与 `explicit_context["interviewee"]`。
 
 ---
 

@@ -83,6 +83,131 @@ from schema import AnalysisReport, RiskPoint, TranscriptionWord
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
 
+def _v86_risk_point_harvest_blob(rp: dict) -> str:
+    """审查台单条风险点：拼接可比对文本，供静默收割防噪门使用。"""
+    if not rp:
+        return ""
+    parts = [
+        str(rp.get("tier1_general_critique") or ""),
+        str(rp.get("tier2_qa_alignment") or ""),
+        str(rp.get("improvement_suggestion") or ""),
+        str(rp.get("original_text") or ""),
+        str(rp.get("deduction_reason") or ""),
+    ]
+    return "\n".join(parts).strip()
+
+
+def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> None:
+    """锁定导出成功后：初稿 vs 终稿差异达标则静默提炼入库（失败不影响主流程）。"""
+    ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
+    cid = (ctx.get("company_id") or "").strip()
+    if not cid:
+        return
+    tag = (ctx.get("interviewee") or "").strip() or "default"
+    initial = st.session_state.get(f"v3_initial_report_{stem}")
+    init_rps = (initial or {}).get("risk_points") or []
+    init_map = {rp.get("_rid"): rp for rp in init_rps if isinstance(rp, dict) and rp.get("_rid")}
+    fin_rps = (payload or {}).get("risk_points") or []
+    try:
+        from memory_engine import capture_and_distill_diff
+
+        for frp in fin_rps:
+            if not isinstance(frp, dict):
+                continue
+            rid = frp.get("_rid")
+            old = init_map.get(rid, {}) if rid else {}
+            ob = _v86_risk_point_harvest_blob(old if isinstance(old, dict) else {})
+            nb = _v86_risk_point_harvest_blob(frp)
+            capture_and_distill_diff(ob, nb, cid, tag)
+    except Exception:
+        logging.getLogger("ai_pitch_coach.ui").warning(
+            "V8.6 静默收割异常（已忽略，不影响导出）", exc_info=True
+        )
+
+
+def _v86_render_executive_dashboard(company_id: str) -> None:
+    """V8.6 高管数字记忆库：只读大盘 + 删除/调权重（不写 session 反向绑定）。"""
+    from memory_engine import (
+        count_executive_memories_for_company,
+        delete_executive_memory_by_uuid,
+        list_all_executive_memories_for_company,
+        update_executive_memory_weight,
+    )
+
+    st.markdown("## 📊 高管数字记忆库")
+    st.caption("数据来自审查台「锁定并生成最终版」时的静默提炼；可剔除伪经验并调整权重。")
+    if not company_id or company_id == "__new__":
+        st.warning("请先在侧栏选择具体公司档案（非「新建公司」状态）后再查看记忆库。")
+        return
+
+    total = count_executive_memories_for_company(company_id)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("已沉淀记忆条目", total)
+    m2.metric("数据域", "当前选中公司")
+    m3.metric("存储位置", ".executive_memory / 公司子目录")
+
+    pairs = list_all_executive_memories_for_company(company_id)
+    if not pairs:
+        st.info("暂无记忆。完成批次分析并在审查台锁定导出后，系统会自动提炼并入库。")
+        return
+
+    rows = []
+    for stem_tag, mem in pairs:
+        rows.append(
+            {
+                "文件桶": stem_tag,
+                "标签": mem.tag,
+                "易错要点": mem.raw_text,
+                "标准口径": mem.correction,
+                "权重": float(mem.weight),
+                "uuid": mem.uuid,
+            }
+        )
+    st.subheader("记忆清单")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    st.subheader("人工干预")
+    options = [(mem.uuid, f"{mem.uuid[:10]}… │ {mem.raw_text[:36]}…") for _, mem in pairs]
+    uuid_list = [u for u, _ in options]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        del_u = st.selectbox(
+            "删除条目（伪经验）",
+            options=uuid_list,
+            format_func=lambda u: next(l for uid, l in options if uid == u),
+            key="v86_dash_del_uuid",
+        )
+        if st.button("🗑️ 删除所选", key="v86_dash_del_btn", type="secondary"):
+            if delete_executive_memory_by_uuid(company_id, del_u):
+                st.success("已删除。")
+                st.rerun()
+            else:
+                st.error("未找到该条目。")
+    with c2:
+        w_u = st.selectbox(
+            "调整权重",
+            options=uuid_list,
+            format_func=lambda u: next(l for uid, l in options if uid == u),
+            key="v86_dash_w_uuid",
+        )
+        cur_w = next(m.weight for _, m in pairs if m.uuid == w_u)
+        new_w = st.number_input(
+            "新权重（越大越优先注入 Prompt）",
+            min_value=0.0,
+            max_value=10.0,
+            value=float(cur_w),
+            step=0.1,
+            key="v86_dash_new_weight",
+        )
+        if st.button("💾 应用权重", key="v86_dash_w_btn"):
+            if update_executive_memory_weight(company_id, w_u, new_w):
+                st.success("已更新权重。")
+                st.rerun()
+            else:
+                st.error("更新失败。")
+
+
 def _preflight_subprocess_kwargs() -> dict:
     """Windows 下隐藏 FFmpeg 自检子进程控制台。"""
     kw: dict = {}
@@ -332,6 +457,7 @@ def _v3_finalize_stem(stem: str) -> Path:
     )
     final = html_path.resolve()
     st.session_state[f"v46_preview_html_{stem}"] = str(final)
+    _v86_harvest_finalize_if_needed(stem, payload)
     return final
 
 
@@ -626,6 +752,8 @@ def _v7_apply_draft_payload(data: dict) -> None:
     for stem in stems:
         if stem in reports:
             st.session_state[f"report_draft_{stem}"] = copy.deepcopy(reports[stem])
+            if f"v3_initial_report_{stem}" not in st.session_state:
+                st.session_state[f"v3_initial_report_{stem}"] = copy.deepcopy(reports[stem])
         if stem in words:
             st.session_state[f"words_{stem}"] = copy.deepcopy(words[stem])
         if stem in ctx:
@@ -899,6 +1027,8 @@ def main() -> None:
 
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
+    if "v86_dashboard_mode" not in st.session_state:
+        st.session_state["v86_dashboard_mode"] = False
 
     # V8.4 域字典初始化
     if "current_company_cache" not in st.session_state:
@@ -992,6 +1122,9 @@ def main() -> None:
                             st.warning(w)
 
         st.divider()
+        if st.button("📊 高管数字记忆库", key="btn_v86_open_dash", use_container_width=True):
+            st.session_state["v86_dashboard_mode"] = True
+            st.rerun()
         # ── 公司档案选择器结束 ────────────────────────────────────────────────────
 
         latest_draft_sid = _v7_latest_draft_session_id()
@@ -1182,6 +1315,13 @@ def main() -> None:
         threading.Thread(target=_startup_gc, daemon=True).start()
 
     st.title("🚀 AI 路演与访谈复盘系统")
+
+    if st.session_state.get("v86_dashboard_mode"):
+        if st.button("⬅️ 返回主控制台", key="btn_v86_close_dash"):
+            st.session_state["v86_dashboard_mode"] = False
+            st.rerun()
+        _v86_render_executive_dashboard(selected_company_id)
+        st.stop()
 
     if not st.session_state.get("env_all_ok", False):
         st.warning(
@@ -1485,6 +1625,12 @@ def main() -> None:
 
         st.session_state.pop("v7_qa_truncation_warn", None)
 
+        mem_cid = (
+            ""
+            if selected_company_id == "__new__"
+            else (selected_company_id or "").strip()
+        )
+
         for i in range(n):
             fname = recording_labels[i]
             stem = Path(fname).stem
@@ -1594,6 +1740,7 @@ def main() -> None:
                         html_export_options=html_opts,
                         hot_words=hot_words,
                         company_background=current_company_bg,
+                        memory_company_id=mem_cid,
                     )
 
                     def _pipe_status(m: str) -> None:
@@ -1628,6 +1775,7 @@ def main() -> None:
                         _rp.setdefault("_rid", uuid.uuid4().hex[:16])
 
                     st.session_state[f"report_draft_{stem}"] = draft
+                    st.session_state[f"v3_initial_report_{stem}"] = copy.deepcopy(draft)
                     st.session_state[f"words_{stem}"] = [w.model_dump() for w in words]
                     st.session_state[f"v3_ctx_{stem}"] = {
                         "audio_path": str(work_audio),
@@ -1638,6 +1786,7 @@ def main() -> None:
                         "watermark": (html_watermark or "").strip(),
                         "mask_html_body": bool(mask_html_body),
                         "html_mask_map": dict(html_mask_map),
+                        "company_id": mem_cid,
                     }
                     v3_review_stems.append(stem)
 

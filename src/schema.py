@@ -80,3 +80,20 @@ class CompanyProfile(BaseModel):
     background: str = Field(default="", description="公司常态化背景，注入 LLM Prompt")
     created_at: str = Field(default="", description="ISO 8601 创建时间")
     updated_at: str = Field(default="", description="ISO 8601 最后更新时间")
+
+
+class ExecutiveMemory(BaseModel):
+    """V8.6 高管「错题本」单条记忆：原始表述与纠正口径，供动态长记忆引擎检索注入。"""
+
+    uuid: str = Field(default_factory=lambda: str(uuid4()), description="条目唯一标识")
+    tag: str = Field(
+        ...,
+        description="高管/场景标签，用于 JSON 分桶（如 zhang_zong、李总）；与落盘文件名安全化规则无关字段值本身",
+    )
+    raw_text: str = Field(..., description="原始表述（易踩坑实录）")
+    correction: str = Field(..., description="纠正建议或标准口径")
+    weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        description="记忆强度或召回权重，供后续排序/衰减使用",
+    )

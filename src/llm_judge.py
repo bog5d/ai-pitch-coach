@@ -24,7 +24,7 @@ from openai import APIError, OpenAI
 from pydantic import ValidationError
 
 from retry_policy import run_with_backoff
-from schema import AnalysisReport, RiskPoint, SceneAnalysis, TranscriptionWord
+from schema import AnalysisReport, ExecutiveMemory, RiskPoint, SceneAnalysis, TranscriptionWord
 from runtime_paths import get_writable_app_root
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,8 @@ MAX_COMPLETION_TOKENS_BY_MODEL: dict[str, int] = {
     "deepseek-chat": 8192,
     "moonshot-v1-32k": 8192,
     "qwen-max": 8192,
+    "claude-3-5-haiku-20241022": 2048,
+    "claude-3-5-haiku-latest": 2048,
 }
 
 MIDDLE_OMIT_MARK = "\n...[内容过长，系统已智能省略中间部分]...\n"
@@ -140,7 +142,16 @@ ROUTER: dict[str, dict[str, str]] = {
         "api_key_env": "DASHSCOPE_API_KEY",
         "model": "qwen-max",
     },
+    # V8.6 错题本静默提炼：Anthropic OpenAI 兼容端点（需 ANTHROPIC_API_KEY）
+    "haiku": {
+        "base_url": os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1"),
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "model": os.getenv("ANTHROPIC_MEMORY_MODEL", "claude-3-5-haiku-20241022"),
+    },
 }
+
+# 主评委模型（evaluate_pitch / refine 等）；不含 haiku，避免误选
+JUDGE_MODEL_KEYS: frozenset[str] = frozenset({"deepseek", "kimi", "qwen"})
 
 DISPLAY_NAME = {
     "deepseek": "DeepSeek-V3 (deepseek-chat)",
@@ -367,11 +378,35 @@ def _normalize_explicit_context(explicit_context: dict[str, Any] | None) -> dict
     }
 
 
+def _format_historical_profile_block(memories: list[ExecutiveMemory] | None) -> str:
+    """
+    V8.6：将 Top 记忆格式化为 Prompt 块（单条字段截断，防 Token 爆炸）。
+    红蓝：再次按 weight 降序截断至 5 条，防止调用方误传过长列表。
+    """
+    if not memories:
+        return ""
+    sorted_m = sorted(memories, key=lambda m: m.weight, reverse=True)[:5]
+    lines: list[str] = []
+    for i, m in enumerate(sorted_m, 1):
+        raw = (m.raw_text or "").replace("\n", " ").strip()
+        cor = (m.correction or "").replace("\n", " ").strip()
+        if len(raw) > 400:
+            raw = raw[:400] + "…"
+        if len(cor) > 400:
+            cor = cor[:400] + "…"
+        lines.append(
+            f"{i}. [标签:{m.tag}] [权重:{m.weight:.2f}] "
+            f"易错要点：{raw} → 建议口径：{cor}"
+        )
+    return "\n".join(lines)
+
+
 def _build_system_prompt(
     schema_str: str,
     explicit_context: dict[str, Any] | None,
     qa_text: str,
     company_background: str = "",
+    historical_memories: list[ExecutiveMemory] | None = None,
 ) -> str:
     ctx = _normalize_explicit_context(explicit_context)
     kb = (qa_text or "").strip()
@@ -381,6 +416,16 @@ def _build_system_prompt(
     _company_bg_block = (
         f"<COMPANY_BACKGROUND>\n{_bg_use}\n</COMPANY_BACKGROUND>"
         if _bg_use
+        else ""
+    )
+    _hist_use = _format_historical_profile_block(historical_memories)
+    _hist_block = (
+        f"<HISTORICAL_PROFILE>\n"
+        f"以下为该高管/标签下历史沉淀的「易错点与标准口径」（按权重优先列出，最多 Top 5）。\n"
+        f"请在本场复盘中优先规避同类表述，并在不违背逐字稿事实的前提下对齐建议口径。\n"
+        f"{_hist_use}\n"
+        f"</HISTORICAL_PROFILE>"
+        if _hist_use
         else ""
     )
 
@@ -421,6 +466,7 @@ def _build_system_prompt(
 {kb_block}
 </KNOWLEDGE_BASE>
 {_company_bg_block}
+{_hist_block}
 <TASK>
 1【角色防错乱锚定（极度重要）】：你必须结合逐字稿中每个 `[index]` 词段的前后上下文，深度核对各段说话人（Speaker）身份与立场，再推断哪个是投资机构、哪个是被访谈方/发言人。
 - **核心纪律**：投资人通常是「抛出压力、质疑、要求数据验证」的一方；发言人通常是「解释业务、回答追问、组织逻辑应对」的一方。
@@ -505,13 +551,14 @@ def evaluate_pitch(
     qa_text: str = "",
     company_background: str = "",
     on_notice: Callable[[str], None] | None = None,
+    historical_memories: list[ExecutiveMemory] | None = None,
 ) -> AnalysisReport:
     """
     使用三巨头之一对逐字稿做场景洞察 + 双层诊断，返回 AnalysisReport。
     explicit_context 建议包含：biz_type, exact_roles, project_name, interviewee；
     可选 session_notes（本段备注）、recording_label（录音文件名标识）。
     """
-    if model_choice not in ROUTER:
+    if model_choice not in JUDGE_MODEL_KEYS:
         raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
 
     transcript = format_transcript_for_llm(words)
@@ -542,7 +589,13 @@ def evaluate_pitch(
         AnalysisReport.model_json_schema(),
         ensure_ascii=False,
     )
-    system_prompt = _build_system_prompt(schema_str, explicit_context, qa_use, company_background)
+    system_prompt = _build_system_prompt(
+        schema_str,
+        explicit_context,
+        qa_use,
+        company_background,
+        historical_memories=historical_memories,
+    )
     user_prompt = (
         "以下是本场沟通转写（每个词前有 [索引]，请仅使用这些索引作为 start_word_index / end_word_index）：\n\n"
         f"{transcript}"
@@ -614,6 +667,113 @@ def evaluate_pitch(
         raise ValueError(f"模型输出不符合 AnalysisReport 契约: {e}") from e
 
 
+def distill_executive_memory_from_diff(
+    original: str,
+    refined: str,
+    tag: str,
+    *,
+    model_key: str = "haiku",
+) -> ExecutiveMemory:
+    """
+    V8.6：对比改写前后文本，提炼可复用的「易错要点 + 标准口径」写入错题本。
+    使用轻量 Haiku（OpenAI 兼容端点）；调用方须已通过防噪门。
+    """
+    o = (original or "").strip()
+    r = (refined or "").strip()
+    cap = 12_000
+    if len(o) > cap:
+        o = o[:cap] + "…"
+    if len(r) > cap:
+        r = r[:cap] + "…"
+    tg = (tag or "").strip() or "default"
+
+    distill_schema = json.dumps(
+        {
+            "type": "object",
+            "required": ["raw_text", "correction"],
+            "properties": {
+                "raw_text": {
+                    "type": "string",
+                    "description": "用一句话概括原表述中的踩坑点或不当口径（非逐字抄录）",
+                },
+                "correction": {
+                    "type": "string",
+                    "description": "业务逻辑层面的纠正建议或高管应遵循的表述偏好/黄金口径",
+                },
+                "weight": {
+                    "type": "number",
+                    "description": "重要性 0~5，默认 1",
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    system_prompt = f"""你是投后复盘与高管表达教练。主理人刚完成一段「AI 改写或人工深度修订」。
+请从「业务逻辑与沟通策略」角度提炼一条可复用记忆，用于未来同场景预防。
+
+要求：
+1. raw_text：概括**原表述的问题类型或错误倾向**（不要逐字复制长文，不超过 200 字）。
+2. correction：给出**应遵循的口径、结构或偏好**（可含简短示例句式，不超过 300 字）。
+3. weight：0~5 的浮点数，越重要越高，默认 1.0。
+4. 忽略纯错别字、标点或无关痛痒的润色；聚焦业务与话术逻辑。
+5. 仅输出一个 JSON 对象，键为 raw_text、correction、weight。
+
+JSON 形状约束：
+{distill_schema}"""
+
+    user_prompt = (
+        f"高管/标签上下文：{tg}\n\n"
+        f"<BEFORE>\n{o}\n</BEFORE>\n\n"
+        f"<AFTER>\n{r}\n</AFTER>\n\n"
+        "请输出 JSON。"
+    )
+
+    client, model_name = _make_client(model_key)
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 2048)
+
+    def _chat_once():
+        return client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = run_with_backoff(
+            _chat_once,
+            logger=logger,
+            operation=f"distill_executive_memory_from_diff ({model_key})",
+        )
+    except APIError as e:
+        raise RuntimeError(f"记忆提炼 LLM API 失败: {e}") from e
+
+    choice = response.choices[0] if response.choices else None
+    if choice is None or not choice.message or choice.message.content is None:
+        raise RuntimeError("记忆提炼 LLM 返回空内容")
+
+    raw_json = choice.message.content.strip()
+    try:
+        data = json.loads(raw_json)
+        if not isinstance(data, dict):
+            raise ValueError("根节点须为对象")
+        inner = next((v for v in data.values() if isinstance(v, dict)), data)
+        raw_text = str(inner.get("raw_text", "")).strip()
+        correction = str(inner.get("correction", "")).strip()
+        if not raw_text or not correction:
+            raise ValueError("raw_text/correction 不能为空")
+        w = float(inner.get("weight", 1.0))
+        w = max(0.0, min(5.0, w))
+        return ExecutiveMemory(tag=tg, raw_text=raw_text, correction=correction, weight=w)
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        raise ValueError(f"记忆提炼 JSON 无效: {e}\n原始: {raw_json[:800]}") from e
+
+
 def load_transcription_words(path: Path) -> List[TranscriptionWord]:
     text = path.read_text(encoding="utf-8")
     data = json.loads(text)
@@ -641,6 +801,8 @@ def refine_risk_point(
     提取该条目对应的词段作为上下文，注入主理人批示意见，返回精炼后的 RiskPoint。
     词级索引（start/end_word_index）在 prompt 中要求 LLM 保持一致。
     """
+    if model_choice not in JUDGE_MODEL_KEYS:
+        raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
     ctx = _normalize_explicit_context(explicit_context)
     sw = int(rp_dict.get("start_word_index", 0))
     ew = int(rp_dict.get("end_word_index", 0))
@@ -765,6 +927,8 @@ def polish_manual_risk_point(
     desc = (raw_description or "").strip()
     if not desc:
         raise ValueError("描述不能为空，请填写至少一句话再调用 LLM 润色。")
+    if model_choice not in JUDGE_MODEL_KEYS:
+        raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
 
     ctx = _normalize_explicit_context(explicit_context)
     kb_block = (qa_text or "").strip() or "未提供参考QA知识库。"

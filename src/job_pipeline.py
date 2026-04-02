@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from llm_judge import evaluate_pitch, truncate_company_background
+from memory_engine import load_top_executive_memories_for_prompt
 from report_builder import (
     HtmlExportOptions,
     apply_asr_original_text_override,
@@ -123,6 +124,7 @@ class PitchFileJobParams:
     html_export_options: HtmlExportOptions | None = None
     hot_words: list[str] | None = None
     company_background: str = ""
+    memory_company_id: str = ""
 
 
 def run_pitch_file_job(
@@ -176,6 +178,13 @@ def run_pitch_file_job(
     bg_use, bg_truncated = truncate_company_background(params.company_background or "")
     if bg_truncated:
         _line("⚠️ 公司背景超过 8000 字，已截取头部内容注入 Prompt。如需完整分析请精简档案内容。")
+    mem_cid = (params.memory_company_id or "").strip()
+    mem_tag = (params.explicit_context or {}).get("interviewee", "").strip()
+    historical = (
+        load_top_executive_memories_for_prompt(mem_cid, mem_tag, limit=5)
+        if mem_cid and mem_tag
+        else []
+    )
     report = evaluate_pitch(
         words_for_llm,
         model_choice=params.model_choice,
@@ -183,6 +192,7 @@ def run_pitch_file_job(
         qa_text=params.qa_text,
         company_background=bg_use,
         on_notice=_line,
+        historical_memories=historical or None,
     )
     if skip_html_export:
         _line("✂️ AI 初稿已生成，等待人工审查台确认后再导出 HTML...")
