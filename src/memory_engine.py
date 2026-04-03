@@ -10,9 +10,10 @@ import json
 import logging
 import os
 import tempfile
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -370,3 +371,81 @@ def record_executive_memory_prompt_hits(
             new_items.append(m)
     if changed:
         save_executive_memories(company_id, tag, new_items, store_dir=store_dir)
+
+
+def get_company_dashboard_stats(
+    company_id: str,
+    *,
+    store_dir: Path | None = None,
+) -> dict[str, Any]:
+    """
+    V9.0 机构画像：仅按 **当前 company_id** 聚合 `.executive_memory` 下该公司目录，绝不跨公司。
+
+    返回结构稳定，无数据时为零值/空列表，供 UI 与 Plotly 安全消费。
+    """
+    empty: dict[str, Any] = {
+        "total_memories": 0,
+        "active_executives": 0,
+        "risk_distribution": {},
+        "executive_hit_trends": {
+            "by_executive": [],
+            "daily_activity": [],
+        },
+        "total_hit_count": 0,
+        "last_updated_at": "",
+    }
+    cid = (company_id or "").strip()
+    if not cid or cid == "__new__":
+        return empty
+
+    try:
+        pairs = list_all_executive_memories_for_company(cid, store_dir=store_dir)
+    except Exception:
+        logger.exception("get_company_dashboard_stats 读取失败，返回空结构")
+        return empty
+
+    if not pairs:
+        return empty
+
+    total = len(pairs)
+    distinct_tags = {(m.tag or "").strip() for _, m in pairs if (m.tag or "").strip()}
+    active_executives = len(distinct_tags)
+
+    risk_dist: Counter[str] = Counter()
+    for _, m in pairs:
+        rt = (m.risk_type or "").strip()
+        risk_dist[rt if rt else "未标注"] += 1
+
+    by_tag_hits: dict[str, int] = defaultdict(int)
+    by_tag_count: Counter[str] = Counter()
+    for _, m in pairs:
+        t = (m.tag or "").strip() or "未标注"
+        by_tag_hits[t] += int(m.hit_count)
+        by_tag_count[t] += 1
+    by_exec = [
+        {"tag": t, "total_hits": by_tag_hits[t], "memory_count": by_tag_count[t]}
+        for t in sorted(by_tag_hits.keys(), key=lambda x: (-by_tag_hits[x], x))
+    ]
+
+    daily: Counter[str] = Counter()
+    for _, m in pairs:
+        u = (m.updated_at or "").strip()
+        if len(u) >= 10 and u[4] == "-" and u[7] == "-":
+            daily[u[:10]] += 1
+    daily_activity = [{"date": d, "count": daily[d]} for d in sorted(daily.keys())]
+
+    total_hits = sum(int(m.hit_count) for _, m in pairs)
+    timestamps = [(m.updated_at or "").strip() for _, m in pairs if (m.updated_at or "").strip()]
+    last_u = max(timestamps) if timestamps else ""
+
+    return {
+        "total_memories": total,
+        "active_executives": active_executives,
+        "risk_distribution": dict(risk_dist),
+        "executive_hit_trends": {
+            "by_executive": by_exec,
+            "daily_activity": daily_activity,
+        },
+        "total_hit_count": total_hits,
+        "last_updated_at": last_u,
+    }

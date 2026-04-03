@@ -8,9 +8,9 @@
 
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
-| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V8.6.1**），纯净包目录名随其变化。 |
-| **能力代际** | **V7.5–V8.4** 见下文文件地图与 ARCHITECTURE。**V8.6**：高管错题本、静默收割、`<HISTORICAL_PROFILE>` Top5、数字记忆库。**V8.6.1**：提炼 **仅 DeepSeek**；记忆字段 `risk_type` / `updated_at` / `hit_count`、Prompt **命中计数**、看板 **Top3 雷区**、锁定 **toast 收割反馈**。 |
-| **回归测试** | `pytest tests/` → 当前全量 **133 passed**（含 `test_v86_*`、`test_v861_*`）。 |
+| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.0**），纯净包目录名随其变化。 |
+| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。 |
+| **回归测试** | `pytest tests/` → 当前全量 **137 passed**（含 `test_v90_*`）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 
@@ -37,7 +37,7 @@
 |------|------|--------|
 | UI / 审查台 / 草稿 / 网关 / **ASR 缓存键** | `app.py` | `asr_cache`（内存）、`_file_md5`；**`batch_sniper_init_{idx}`** 可写、**`batch_sniper_editor_{idx}`** 仅 widget；**禁止**对 `ed_key` 赋值；锁定前 `deepcopy`；**V8.6** `v3_initial_report_{stem}`、`v3_ctx.company_id`、`v86_dashboard_mode`；**高管数字记忆库** 仅用 `selectbox`+按钮写回 JSON，勿对 editor widget 反向赋值 |
 | **磁盘 ASR 缓存** | `src/disk_asr_cache.py` | `{writable_root}/.asr_cache/{md5}.json`，原子写入；`app.py` 在命中内存后尝试磁盘、生成后回写 |
-| **高管错题本 V8.6+** | `src/memory_engine.py` | `{writable_root}/.executive_memory/{company}/{tag}.json`；`capture_and_distill_diff`、`record_executive_memory_prompt_hits`、`top_risk_type_counts_for_company`、Dashboard |
+| **高管错题本 / 指挥中心 V9** | `src/memory_engine.py` | 同上 + **`get_company_dashboard_stats`**（机构画像聚合）；看板 **`plotly.express`** |
 | 草稿持久化 | `src/draft_manager.py` | 原子落盘；`.drafts/` |
 | 单次任务编排 | `src/job_pipeline.py` | **`cached_words`** 非空则 **跳过** `transcribe_audio`；**`memory_company_id` + interviewee** 时加载 Top5 → **`record_executive_memory_prompt_hits`** → `evaluate_pitch` |
 | 转写 | `src/transcriber.py` | 硅基优先、阿里兜底；**speaker_id**、`format_transcript_plain_by_speaker`；热词等与 V8.0 UI 联动 |
@@ -69,6 +69,7 @@
 - V8.0：`tests/test_v80_*`（磁盘缓存、热词、精炼等，以目录为准）
 - V8.6：`tests/test_v86_memory_engine.py`、`test_v86_harvester.py`、`test_v86_injector.py`
 - V8.6.1：`tests/test_v861_memory_evolution.py`
+- V9.0：`tests/test_v90_aggregator.py`
 
 ---
 

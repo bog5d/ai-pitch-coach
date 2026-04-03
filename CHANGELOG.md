@@ -4,6 +4,26 @@
 
 ---
 
+## [V9.0] — 2026-04-03 · 全景机构画像与数据指挥中心
+
+本版本把 **V8.6.x 水下飞轮** 托出水面：**仅按当前选中 `company_id`** 聚合 `.executive_memory`，与 V8.4 公司域字典一致；指挥中心采用 **Plotly** 交互图（条形 + 环形 + 可选日分布折线）与 **四卡 KPI**，下钻表支持 **高管 / 风险类型** 筛选，并 **保留删除与调权重** 闭环。依赖新增 **`plotly`**。
+
+### 新增
+
+- **`get_company_dashboard_stats(company_id)`**（`memory_engine.py`）：`total_memories`、`active_executives`（去重 `tag`）、`risk_distribution`、`executive_hit_trends`（`by_executive`、`daily_activity`）、`total_hit_count`、`last_updated_at`。
+- **`tests/test_v90_aggregator.py`**：空公司、`__new__`、双公司隔离、零指针安全结构。
+
+### UI
+
+- 看板标题 **全景机构画像 · 数据指挥中心**；`st.container(border=True)` 包裹 KPI（低版本自动降级）。
+- **Plotly Express**：`template="plotly_white"`、企业蓝主色；环形图 `hole=0.4`，中心 **最高频雷区前两字** 缩写。
+
+### 全量回归
+
+- **137 passed**
+
+---
+
 ## [V8.6.1] — 2026-04-03 · DeepSeek 统一提炼 + 记忆进化与收割反馈
 
 ### 修复（红蓝）

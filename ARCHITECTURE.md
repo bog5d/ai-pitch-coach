@@ -1,4 +1,4 @@
-# AI 路演教练 — 架构与数据流（V3.1 … V8.6）
+# AI 路演教练 — 架构与数据流（V3.1 … V9.0）
 
 本文档供后续开发者与 AI 接管时快速建立心智模型：**模块职责、数据流、人机协同与商业级防护**。
 
@@ -155,7 +155,7 @@
 | 防噪 | `memory_diff_noise_gate_passes`：相对 Levenshtein **>10%** 或 **\|Δ字数\|>10** 才调用提炼 LLM |
 | 提炼 | `llm_judge.distill_executive_memory_from_diff` → **DeepSeek**（`DEEPSEEK_API_KEY`）；失败捕获，静默跳过 |
 | 注入 | `job_pipeline`：`load_top` → **`record_executive_memory_prompt_hits`**（磁盘 `hit_count`+`updated_at`）→ `evaluate_pitch`；**`_format_historical_profile_block`** 内再次 **weight 降序截断 5 条** |
-| 看板 | `list_all_executive_memories_for_company` + `delete_executive_memory_by_uuid` / `update_executive_memory_weight`；**禁止**用 `st.data_editor` 绑定整表再反向写 `session_state`（铁律三） |
+| 看板 | **V9.0** **`get_company_dashboard_stats(company_id)`** 仅聚合该公司目录；UI **Plotly**（`plotly.express`）+ 下钻筛选；`delete` / `update_executive_memory_weight` 保留；**禁止** `data_editor` 反向写 `session_state`（铁律三） |
 
 **接手调试清单**：收割未触发 → 查 `v3_ctx.company_id`、**非「未指定」** 访谈人、`v3_initial_report_{stem}`；提炼不落盘 → 查 **`DEEPSEEK_API_KEY`** 与 `debug.log`；命中不增 → 查 `record_executive_memory_prompt_hits` 与 tag 桶路径。
 

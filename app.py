@@ -1,6 +1,6 @@
 """
 AI 路演与访谈复盘系统 — Streamlit 企业级控制台（按录音逐条归档 + 动态路径）。
-发版主线 V8.6.1（与根目录 build_release.py → CURRENT_VERSION 对齐）。
+发版主线 V9.0（与根目录 build_release.py → CURRENT_VERSION 对齐）。
 
 支持单次 1 个或多个音频：每条录音单独填写被访谈人、备注与参考 QA。
 运行：在项目根目录执行  streamlit run app.py
@@ -132,50 +132,147 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> int:
 
 
 def _v86_render_executive_dashboard(company_id: str) -> None:
-    """V8.6 高管数字记忆库：只读大盘 + 删除/调权重（不写 session 反向绑定）。"""
+    """V9.0 全景机构画像：KPI + Plotly + 下钻表 + 删除/调权重（严格按当前 company_id 聚合）。"""
     from memory_engine import (
-        count_executive_memories_for_company,
         delete_executive_memory_by_uuid,
+        get_company_dashboard_stats,
         list_all_executive_memories_for_company,
-        top_risk_type_counts_for_company,
         update_executive_memory_weight,
     )
 
-    st.markdown("## 📊 高管数字记忆库")
-    st.caption("数据来自审查台「锁定并生成最终版」时的静默提炼；可剔除伪经验并调整权重。")
+    st.markdown("## 🛰️ 全景机构画像 · 数据指挥中心")
+    st.caption(
+        "仅展示**当前侧栏选中公司**的沉淀数据；与 V8.4 公司域字典一致，绝不跨公司混桶。"
+    )
     if not company_id or company_id == "__new__":
-        st.warning("请先在侧栏选择具体公司档案（非「新建公司」状态）后再查看记忆库。")
+        st.warning("请先在侧栏选择具体公司档案（非「新建公司」状态）后再查看指挥中心。")
         return
 
-    total = count_executive_memories_for_company(company_id)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("已沉淀记忆条目", total)
-    m2.metric("数据域", "当前选中公司")
-    m3.metric("存储位置", ".executive_memory / 公司子目录")
+    _ks = "".join(c if c.isalnum() or c in "_-" else "_" for c in company_id)[:48]
 
+    stats = get_company_dashboard_stats(company_id)
     pairs = list_all_executive_memories_for_company(company_id)
-    if not pairs:
-        st.info("暂无记忆。完成批次分析并在审查台锁定导出后，系统会自动提炼并入库。")
-        return
 
-    top3 = top_risk_type_counts_for_company(company_id, limit=3)
-    st.subheader("🔥 高频雷区（按记忆条数 · 风险等级）")
-    st.caption("来自各条记忆的 `risk_type`（严重 / 一般 / 轻微）聚合，助您一眼看到管理层通病。")
-    if top3:
-        mx = max(c for _, c in top3) or 1
-        pc = st.columns(3)
-        for i, (label, cnt) in enumerate(top3):
-            with pc[i]:
-                st.metric(f"{label}", f"{cnt} 条")
-                st.progress(min(1.0, cnt / mx))
-        labels = [f"{lab} · {n}条" for lab, n in top3]
-        if hasattr(st, "pills"):
-            try:
-                st.pills("Top3 雷区标签", labels, key=f"v861_risk_pills_{company_id}")
-            except Exception:
-                pass
-    else:
-        st.caption("（暂无 risk_type 统计）")
+    last_disp = stats["last_updated_at"] or "—"
+    if last_disp != "—" and "T" in last_disp:
+        last_disp = last_disp.replace("T", " ").replace("Z", " UTC")[:19]
+
+    try:
+        with st.container(border=True):
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("沉淀总经验数", f"{stats['total_memories']:,}")
+            k2.metric("覆盖高管数", f"{stats['active_executives']:,}")
+            k3.metric("高频命中总数", f"{stats['total_hit_count']:,}")
+            k4.metric("最近一次更新", last_disp)
+    except TypeError:
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("沉淀总经验数", f"{stats['total_memories']:,}")
+        k2.metric("覆盖高管数", f"{stats['active_executives']:,}")
+        k3.metric("高频命中总数", f"{stats['total_hit_count']:,}")
+        k4.metric("最近一次更新", last_disp)
+
+    try:
+        import plotly.express as px
+    except ImportError:
+        px = None
+        st.warning("请执行 `pip install plotly` 后刷新页面以加载图表。")
+
+    if px is not None and stats["total_memories"] > 0:
+        st.subheader("交互分析")
+        col_l, col_r = st.columns([6, 4])
+        by_exec = stats["executive_hit_trends"]["by_executive"]
+        rd = stats["risk_distribution"]
+
+        with col_l:
+            st.markdown("**高管战力 · 累计命中**")
+            if by_exec:
+                df_bar = pd.DataFrame(by_exec)
+                fig_bar = px.bar(
+                    df_bar,
+                    x="tag",
+                    y="total_hits",
+                    template="plotly_white",
+                    labels={"tag": "高管 / Tag", "total_hits": "累计命中"},
+                    hover_data=["memory_count"],
+                    color_discrete_sequence=["#2563eb"],
+                )
+                fig_bar.update_layout(
+                    xaxis=dict(showgrid=False, title=None),
+                    yaxis=dict(showgrid=False, zeroline=True),
+                    plot_bgcolor="rgba(255,255,255,0)",
+                    margin=dict(t=24, b=40, l=40, r=16),
+                    height=380,
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.caption("暂无按高管聚合数据。")
+
+        with col_r:
+            st.markdown("**核心雷区 · 风险类型占比**")
+            if rd:
+                names = list(rd.keys())
+                vals = list(rd.values())
+                top_label = max(rd, key=rd.get)
+                abbr = top_label[:2] if len(top_label) >= 2 else (top_label or "—")
+                fig_pie = px.pie(
+                    names=names,
+                    values=vals,
+                    hole=0.4,
+                    template="plotly_white",
+                    color_discrete_sequence=px.colors.sequential.Blues_r,
+                )
+                fig_pie.update_traces(
+                    textposition="inside",
+                    textinfo="percent+label",
+                    hovertemplate="<b>%{label}</b><br>条数: %{value}<br>占比: %{percent}<extra></extra>",
+                )
+                fig_pie.update_layout(
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.25, x=0),
+                    margin=dict(t=24, b=80, l=16, r=16),
+                    height=380,
+                    annotations=[
+                        dict(
+                            text=f"<b>{abbr}</b>",
+                            x=0.5,
+                            y=0.5,
+                            xref="paper",
+                            yref="paper",
+                            showarrow=False,
+                            font=dict(size=22, color="#1e3a5f"),
+                        )
+                    ],
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.caption("暂无风险类型分布。")
+
+        daily = stats["executive_hit_trends"].get("daily_activity") or []
+        if len(daily) > 1:
+            st.markdown("**记忆触达日分布**（按 `updated_at` 日期计条数）")
+            df_d = pd.DataFrame(daily)
+            fig_line = px.line(
+                df_d,
+                x="date",
+                y="count",
+                markers=True,
+                template="plotly_white",
+                labels={"date": "日期", "count": "当日有条目的记忆数"},
+            )
+            fig_line.update_traces(line_color="#2563eb", marker=dict(size=8))
+            fig_line.update_layout(
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=False),
+                plot_bgcolor="white",
+                height=280,
+                margin=dict(t=12, b=40, l=40, r=16),
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+    elif stats["total_memories"] == 0:
+        st.info("暂无记忆。完成批次分析并在审查台锁定导出后，系统将自动提炼并入库。")
+
+    if not pairs:
+        return
 
     rows = []
     for stem_tag, mem in pairs:
@@ -183,7 +280,7 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
             {
                 "文件桶": stem_tag,
                 "标签": mem.tag,
-                "风险类型": mem.risk_type or "—",
+                "风险类型": (mem.risk_type or "").strip() or "—",
                 "易错要点": mem.raw_text,
                 "标准口径": mem.correction,
                 "权重": float(mem.weight),
@@ -192,11 +289,46 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
                 "uuid": mem.uuid,
             }
         )
-    st.subheader("记忆清单")
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    all_tags = sorted({r["标签"] for r in rows})
+    all_risks = sorted({r["风险类型"] for r in rows})
 
-    st.subheader("人工干预")
-    options = [(mem.uuid, f"{mem.uuid[:10]}… │ {mem.raw_text[:36]}…") for _, mem in pairs]
+    st.subheader("下钻明细")
+    f1, f2 = st.columns(2)
+    with f1:
+        exec_pick = st.selectbox(
+            "按高管筛选",
+            ["全部"] + all_tags,
+            key=f"v90_exec_{_ks}",
+        )
+    with f2:
+        risk_pick = st.multiselect(
+            "按风险类型筛选（不选表示全部）",
+            all_risks,
+            key=f"v90_risk_{_ks}",
+        )
+
+    def _keep(r: dict) -> bool:
+        if exec_pick != "全部" and r["标签"] != exec_pick:
+            return False
+        if risk_pick and r["风险类型"] not in risk_pick:
+            return False
+        return True
+
+    filt = [r for r in rows if _keep(r)]
+    st.dataframe(
+        pd.DataFrame(filt),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("外科手术 · 删除 / 调权重")
+    if not filt:
+        st.caption("当前筛选下无行，请调整筛选或清空条件。")
+        return
+
+    options = [
+        (r["uuid"], f"{r['uuid'][:10]}… │ {str(r['易错要点'])[:36]}…") for r in filt
+    ]
     uuid_list = [u for u, _ in options]
 
     c1, c2 = st.columns(2)
@@ -205,9 +337,9 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
             "删除条目（伪经验）",
             options=uuid_list,
             format_func=lambda u: next(l for uid, l in options if uid == u),
-            key="v86_dash_del_uuid",
+            key=f"v90_del_{_ks}",
         )
-        if st.button("🗑️ 删除所选", key="v86_dash_del_btn", type="secondary"):
+        if st.button("🗑️ 删除所选", key=f"v90_del_btn_{_ks}", type="secondary"):
             if delete_executive_memory_by_uuid(company_id, del_u):
                 st.success("已删除。")
                 st.rerun()
@@ -218,18 +350,18 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
             "调整权重",
             options=uuid_list,
             format_func=lambda u: next(l for uid, l in options if uid == u),
-            key="v86_dash_w_uuid",
+            key=f"v90_w_{_ks}",
         )
-        cur_w = next(m.weight for _, m in pairs if m.uuid == w_u)
+        cur_w = next(float(r["权重"]) for r in filt if r["uuid"] == w_u)
         new_w = st.number_input(
             "新权重（越大越优先注入 Prompt）",
             min_value=0.0,
             max_value=10.0,
             value=float(cur_w),
             step=0.1,
-            key="v86_dash_new_weight",
+            key=f"v90_w_num_{_ks}",
         )
-        if st.button("💾 应用权重", key="v86_dash_w_btn"):
+        if st.button("💾 应用权重", key=f"v90_w_btn_{_ks}"):
             if update_executive_memory_weight(company_id, w_u, new_w):
                 st.success("已更新权重。")
                 st.rerun()
