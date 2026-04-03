@@ -993,10 +993,16 @@ def _batch_sniper_targets_json(idx: int) -> str:
     """从狙击表读取数据，序列化为 JSON（quote/reason）。
     优先读 data_editor 返回值缓存（result_key，完整 DataFrame），兜底读初始数据（init_key）。
     注：ed_key 存的是 Streamlit delta dict，不是 DataFrame，不再从中读取。
+    ⚠️ 严禁用 `or` 运算符判断 DataFrame：DataFrame.__bool__() 会抛 ValueError。
+       必须用 `is None` 判断。
     """
     result_key = f"batch_sniper_result_{idx}"
     init_key = f"batch_sniper_init_{idx}"
-    df = st.session_state.get(result_key) or st.session_state.get(init_key)
+    # P0 修复：`or` 运算符对 DataFrame 调用 __bool__() → ValueError "ambiguous"
+    # 改为 is None 判断，安全选取优先级更高的 result DataFrame
+    df = st.session_state.get(result_key)
+    if df is None:
+        df = st.session_state.get(init_key)
     df = _normalize_sniper_editor_df(df)
     if df is None:
         return "[]"
@@ -1823,59 +1829,65 @@ def main() -> None:
                     status.write(
                         f"📥 接收原始文件：大小 {orig_size_mb:.2f} MB"
                     )
-                    if orig_len < 10 * 1024 * 1024:
-                        status.write("✅ 文件极轻量，免压缩直通 ASR。")
-                        work_audio = audio_path
-                    else:
-                        status.write(
-                            "⚙️ 启动智能音频网关 (抽离视频轨 & 语音降采样)..."
-                        )
-                        cres = smart_compress_media(
-                            raw_bytes, filename_hint=fname
-                        )
-                        if cres.did_compress:
-                            new_size_mb = len(cres.data) / (1024 * 1024)
-                            ratio = (1.0 - len(cres.data) / max(1, orig_len)) * 100.0
-                            st.success(
-                                f"🚀 极致压缩完成！新大小：{new_size_mb:.2f} MB "
-                                f"(体积缩减 {ratio:.1f}%)"
-                            )
-                            gw = target_dir / f"{stem}_v62_asr_gateway.mp3"
-                            gw.write_bytes(cres.data)
-                            work_audio = gw.resolve()
-                        else:
-                            st.warning(
-                                "⚠️ 压缩遇到特殊格式，已安全回退至原文件处理。"
-                            )
-                            work_audio = audio_path
 
-                    # ── V8.0 模块一：三级 ASR 缓存检查（内存 → 磁盘 → 云端）──
+                    # ── P1 修复：先算 hash，先查缓存，缓存命中完全跳过 FFmpeg ──
+                    # 旧逻辑：FFmpeg 压缩 → 计算 hash → 查缓存（缓存命中也白跑 FFmpeg）
+                    # 新逻辑：计算 hash → 查缓存 → 未命中才启动 FFmpeg（节省 CPU 数十秒）
                     file_hash = _file_md5(raw_bytes)
                     asr_cache: dict = st.session_state.setdefault("asr_cache", {})
                     cached_entry = asr_cache.get(file_hash)
                     disk_entry = None  # 显式初始化，避免 else 块外未定义
                     cached_words_models = None
+                    gw_compressed: Path | None = None  # 阅后即焚：跟踪待清理的临时压缩文件
 
                     if cached_entry:
-                        # Level 1：内存缓存命中
+                        # Level 1：内存缓存命中 → 完全跳过 FFmpeg
                         cached_words_models = [
                             TranscriptionWord.model_validate(w)
                             for w in cached_entry["words"]
                         ]
-                        status.write("✅ 命中内存缓存（本次 session 已转写），跳过云端 ASR，节省资源。")
+                        status.write("✅ 命中内存缓存（本次 session 已转写），跳过压缩与云端 ASR，节省资源。")
+                        work_audio = audio_path
                     else:
-                        # Level 2：磁盘缓存命中
                         disk_entry = load_asr_cache(file_hash)
                         if disk_entry:
+                            # Level 2：磁盘缓存命中 → 完全跳过 FFmpeg
                             cached_words_models = [
                                 TranscriptionWord.model_validate(w)
                                 for w in disk_entry["words"]
                             ]
                             # 同步写入内存缓存，供后续同 session 操作复用
                             asr_cache[file_hash] = disk_entry
-                            status.write("✅ 命中磁盘缓存（历史已转写文件），完全跳过云端 ASR，节省资源。")
+                            status.write("✅ 命中磁盘缓存（历史已转写文件），完全跳过压缩与云端 ASR，节省资源。")
+                            work_audio = audio_path
                         else:
-                            # Level 3：需要云端转写
+                            # Level 3：两级缓存均未命中，才执行 FFmpeg + 云端 ASR
+                            if orig_len < 10 * 1024 * 1024:
+                                status.write("✅ 文件极轻量，免压缩直通 ASR。")
+                                work_audio = audio_path
+                            else:
+                                status.write(
+                                    "⚙️ 启动智能音频网关 (抽离视频轨 & 语音降采样)..."
+                                )
+                                cres = smart_compress_media(
+                                    raw_bytes, filename_hint=fname
+                                )
+                                if cres.did_compress:
+                                    new_size_mb = len(cres.data) / (1024 * 1024)
+                                    ratio = (1.0 - len(cres.data) / max(1, orig_len)) * 100.0
+                                    st.success(
+                                        f"🚀 极致压缩完成！新大小：{new_size_mb:.2f} MB "
+                                        f"(体积缩减 {ratio:.1f}%)"
+                                    )
+                                    gw = target_dir / f"{stem}_v62_asr_gateway.mp3"
+                                    gw.write_bytes(cres.data)
+                                    work_audio = gw.resolve()
+                                    gw_compressed = gw  # 阅后即焚：记录待清理路径
+                                else:
+                                    st.warning(
+                                        "⚠️ 压缩遇到特殊格式，已安全回退至原文件处理。"
+                                    )
+                                    work_audio = audio_path
                             status.write(
                                 "⏱️ 里程碑：云端转写 → 敏感词脱敏 → DeepSeek 多维度 QA 对齐（结构化 JSON）→ 初稿进入审查台。"
                             )
@@ -1941,6 +1953,18 @@ def main() -> None:
                             logging.getLogger("ai_pitch_coach.ui").warning(
                                 "磁盘 ASR 缓存写入失败（不影响主流程）", exc_info=True
                             )
+
+                    # ── 阅后即焚：ASR 已入库，立即清理 FFmpeg 临时压缩音频 ──
+                    # 防止每次批量处理堆积大量 _v62_asr_gateway.mp3，撑爆磁盘
+                    if gw_compressed is not None:
+                        try:
+                            gw_compressed.unlink(missing_ok=True)
+                        except OSError:
+                            logging.getLogger("ai_pitch_coach.ui").warning(
+                                "阅后即焚：无法删除临时压缩音频 %s（已跳过，不影响主流程）",
+                                gw_compressed,
+                            )
+                        gw_compressed = None
 
                     draft = report.model_dump()
                     for _rp in draft.get("risk_points") or []:

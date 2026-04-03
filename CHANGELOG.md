@@ -4,6 +4,43 @@
 
 ---
 
+## [V9.1] — 2026-04-03 · 三大顽疾根治版（P0/P1/P2 外科手术）
+
+V9.0 由 AI 工具（Cursor Composer）快速搭建，功能完整但遗留三个底层 Bug。本版本为总工程师级审计后的外科手术修复，TDD 驱动，零回归破坏（190 passed）。
+
+### 修复
+
+#### P0（致命）— DataFrame `or` 运算符崩溃
+- **文件**：`app.py`，`_batch_sniper_targets_json`
+- **根因**：`df = state.get(result_key) or state.get(init_key)` 对 DataFrame 调用 `__bool__()` → `ValueError: The truth value of a DataFrame is ambiguous`
+- **修复**：`or` → `is None` 判断，安全选取优先级更高的 result DataFrame
+- **新增测试**：`tests/test_v90_sniper_dataframe_bug.py`（13 cases，含 DataFrame or 文档化 + 端到端序列化验证）
+
+#### P1（性能）— 缓存命中时仍执行 FFmpeg 压缩 + 临时文件堆积
+- **文件**：`app.py`，生成报告主循环
+- **根因**：`_file_md5(raw_bytes)` 和缓存检查代码在 `smart_compress_media` 之后执行，导致缓存命中场景也白白跑 CPU 密集型压缩
+- **修复 1**：重排执行顺序 → 算 hash → 查内存缓存 → 查磁盘缓存 → 仅未命中才启动 FFmpeg
+- **修复 2**：**阅后即焚** — `gw_compressed` 在 `run_pitch_file_job` 入库完成后立即 `unlink`，防止批量分析时 `_v62_asr_gateway.mp3` 堆积撑爆磁盘
+- **新增测试**：`tests/test_v90_pipeline_reorder.py`（17 cases，含 MD5 一致性、缓存命中不调 compress 的 mock 断言、阅后即焚顺序验证）
+
+#### P2（体验）— 文字稿无标点无说话人分段（三联修复）
+- **文件**：`src/transcriber.py`
+- **根因 A**：SiliconFlow SenseVoiceSmall 词级 token 无标点（标点在 segment.text 中），旧代码仅取词级字段
+- **根因 B**：阿里云 Paraformer API 缺少 `diarization_enabled: True` 参数，服务端不返回 `spk_id`
+- **根因 C**：`format_transcript_plain_by_speaker` 仅在说话人切换时换行，同说话人一坨不拆
+- **修复 1**（阿里云参数）：`_dashscope_submit_transcription_rest` 加 `"diarization_enabled": True`
+- **修复 2**（阿里云标点）：`_map_aliyun_paraformer_to_schema` 将 `sentence.text` 末尾标点追加到句末词 `text` 字段（仅改 text，timestamps 严禁变动）
+- **修复 3**（SiliconFlow 标点）：新函数 `_build_siliconflow_segment_punct_map(payload)` 构建 `{有效词全局索引: 标点}` map；`_map_siliconflow_to_schema` 新增 `punct_map` 可选参数，`transcribe_siliconflow` 调用时自动传入
+- **修复 4**（显示格式）：`format_transcript_plain_by_speaker` 遇词末句终标点插 `\n`（段内句间）；说话人间保持 `\n\n`
+- **对齐免疫**：`start_time` / `end_time` / `word_index` 在所有路径严禁变动（7 个专项测试覆盖）
+- **新增测试**：`tests/test_v90_transcript_quality.py`（23 cases）
+
+### 全量回归
+
+- **190 passed**（较 V9.0 的 137 passed 新增 53 个测试用例）
+
+---
+
 ## [V9.0] — 2026-04-03 · 全景机构画像与数据指挥中心
 
 本版本把 **V8.6.x 水下飞轮** 托出水面：**仅按当前选中 `company_id`** 聚合 `.executive_memory`，与 V8.4 公司域字典一致；指挥中心采用 **Plotly** 交互图（条形 + 环形 + 可选日分布折线）与 **四卡 KPI**，下钻表支持 **高管 / 风险类型** 筛选，并 **保留删除与调权重** 闭环。依赖新增 **`plotly`**。
