@@ -4,6 +4,50 @@
 
 ---
 
+## [V9.6] — 2026-04-03 · 两阶段深评 · 并发硬化版
+
+V9.1 稳定后的全面进化：Cursor 搭建三大新架构（两阶段评估引擎、ASR 轻量润色管道、魔法对话框 API），总工程师完成深度审计并修复 4 处技术隐患，全量测试从 190 → 208 passed（零回归破坏）。
+
+### 新增（Cursor 架构）
+
+#### 两阶段深评引擎（`src/llm_judge.py`）
+- **阶段一 `scan_risk_targets`**：轻量扫描全文，输出 `RiskScanResult`（`SceneAnalysis` + `RiskTargetCandidate[]`），不写 Tier/话术
+- **阶段二 `deep_evaluate_single_risk`**：对每个靶点单独召唤 LLM，聚焦片段做完整 `RiskPoint` 深评
+- 索引强制校验：深评结果的 `start/end_word_index` 由系统强制覆写，消除 LLM 偏移幻觉
+
+#### ASR 轻量润色（`src/asr_polish.py`，新文件）
+- `polish_transcription_text`：转写后调用 DeepSeek 做错别字 + 行业术语纠正
+- `apply_asr_polish_payload_to_words`：按 `word_index` 字典映射，**只改 text，时间戳严格不变**
+- 索引集合不一致时自动降级返回原列表（词级安全保证）
+- `job_pipeline.py` 新增 `skip_asr_polish` 开关，默认开启
+
+#### 魔法对话框（`refine_single_risk_point`）
+- 按主理人一句话指令局部重写单条 `improvement_suggestion`
+- 返回不可变 `MagicRefinementResult`，纯函数式，无状态污染
+
+#### 新数据契约（`src/schema.py`）
+- `RiskTargetCandidate`：阶段一靶点（位置 + 问题摘要 + 风险类型）
+- `RiskScanResult`：阶段一出参（`SceneAnalysis` + `targets[]`）
+- `MagicRefinementResult`：魔法对话框出参（`risk_point_id` + `improvement_suggestion`）
+
+### 硬化修复（总工程师审计，4 处隐患）
+
+| # | 位置 | 问题 | 修复 |
+|---|------|------|------|
+| Bug1 | `asr_polish.py` | LLM 返回重复 `word_index` 时静默覆盖（不降级） | 引入 `seen_indices` 集合，检测到重复立即降级 |
+| Bug2 | `llm_judge.py` | 深评串行 `for` 循环（10靶点≈50秒） | `ThreadPoolExecutor(max_workers=6)` 并发，结果按原始顺序排列 |
+| Bug3 | `llm_judge.py` | `refine_single_risk_point` 的 `context_text` 无长度上限 | 4000 字截断保护，防 token 超限 |
+| Bug4 | `llm_judge.py` | 阶段一 `RiskScanResult` JSON 截断直接抛 `ValueError` | 新增 `_salvage_risk_scan_result`：降级返回空靶点列表而非崩溃 |
+
+### 测试
+
+- **208 passed**（较 V9.1 的 190 新增 18 个用例）
+- `tests/test_v96_asr_polish.py`（9 cases）：正常映射 + 5 个极端边界（合并词/删除词/重复索引/多余词/不连续索引）
+- `tests/test_v96_two_stage.py`（6 cases）：两阶段链路 + 多靶点并发 + 单靶点失败跳过 + 阶段一截断降级
+- `tests/test_v96_magic_refinement.py`（3 cases）：正常返回 + 空指令校验 + 超长 context 截断
+
+---
+
 ## [V9.1] — 2026-04-03 · 三大顽疾根治版（P0/P1/P2 外科手术）
 
 V9.0 由 AI 工具（Cursor Composer）快速搭建，功能完整但遗留三个底层 Bug。本版本为总工程师级审计后的外科手术修复，TDD 驱动，零回归破坏（190 passed）。

@@ -18,6 +18,35 @@ class SceneAnalysis(BaseModel):
     speaker_roles: str = Field(..., description="推断的双方身份背景及现场氛围")
 
 
+class RiskTargetCandidate(BaseModel):
+    """V9.6 阶段一：全文扫描得到的风险靶点（不含完整 Tier 与话术）。"""
+
+    start_word_index: int = Field(..., description="靶点起始词索引（含）")
+    end_word_index: int = Field(..., description="靶点结束词索引（含）")
+    problem_description: str = Field(..., description="该靶点问题摘要，供阶段二深评使用")
+    risk_type: str = Field(
+        ...,
+        description="风险类型标签，如：口径偏离、逻辑断裂、数据含糊、狙击清单命中等",
+    )
+
+
+class RiskScanResult(BaseModel):
+    """V9.6 阶段一输出：场景速写 + 风险靶点列表。"""
+
+    scene_analysis: SceneAnalysis = Field(..., description="全局场景推断")
+    targets: List[RiskTargetCandidate] = Field(
+        default_factory=list,
+        description="待阶段二逐个点名深评的靶点",
+    )
+
+
+class MagicRefinementResult(BaseModel):
+    """V9.6「魔法对话框」后端：按用户指令重写单条改进建议的出参。"""
+
+    risk_point_id: str = Field(..., description="与前端/会话稳定绑定的风险点标识")
+    improvement_suggestion: str = Field(..., description="重写后的 improvement_suggestion 正文")
+
+
 class RiskPoint(BaseModel):
     risk_level: Literal["严重", "一般", "轻微"] = Field(..., description="踩坑严重程度")
     tier1_general_critique: str = Field(..., description="第一层(顶尖视角): 商业逻辑致命伤和隐患")

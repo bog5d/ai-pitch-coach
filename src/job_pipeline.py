@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from asr_polish import polish_transcription_text
 from llm_judge import evaluate_pitch, truncate_company_background
 from memory_engine import (
     load_top_executive_memories_for_prompt,
@@ -128,6 +129,7 @@ class PitchFileJobParams:
     hot_words: list[str] | None = None
     company_background: str = ""
     memory_company_id: str = ""
+    skip_asr_polish: bool = False
 
 
 def run_pitch_file_job(
@@ -155,14 +157,8 @@ def run_pitch_file_job(
         char_est = sum(len(w.text or "") for w in words)
         _line(
             f"✅ 已复用本条录音的转写缓存（约 {char_est} 字 / {len(words)} 个词级锚点），"
-            "跳过云端 ASR，节省资源。正在执行商业机密脱敏打码…"
+            "跳过云端 ASR，节省资源。"
         )
-        # 缓存命中时仍需落盘转写 JSON，保持归档完整性
-        if params.transcription_json_path is not None:
-            params.transcription_json_path.write_text(
-                json.dumps([w.model_dump() for w in words], ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
     else:
         _line(f"⏱️ 正在提取音频特征：{audio_path.name}（耗时可能较长，请耐心等待）…")
         words = transcribe_audio(
@@ -172,11 +168,28 @@ def run_pitch_file_job(
         )
         char_est = sum(len(w.text or "") for w in words)
         _line(
-            f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。正在执行商业机密脱敏打码…"
+            f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。"
         )
+
+    if not params.skip_asr_polish and words:
+        _line("⏱️ 正在对 ASR 实录做轻量润色（错别字与标点，保留词级时间戳）…")
+        words = polish_transcription_text(
+            words,
+            company_background=params.company_background,
+            industry_hot_words=params.hot_words,
+            on_notice=_line,
+        )
+
+    if params.transcription_json_path is not None:
+        params.transcription_json_path.write_text(
+            json.dumps([w.model_dump() for w in words], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    _line("正在执行商业机密脱敏打码…")
     words_for_llm = mask_words_for_llm(words, params.sensitive_words)
     _line(
-        f"⏱️ {params.model_choice} 正在进行多维度 QA 对齐与痛点审查（结构化 JSON，最耗时一步）…"
+        f"⏱️ {params.model_choice} 正在进行两阶段深度评估（扫描靶点 → 逐点深评，最耗时）…"
     )
     bg_use, bg_truncated = truncate_company_background(params.company_background or "")
     if bg_truncated:

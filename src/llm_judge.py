@@ -15,6 +15,7 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any, List
@@ -24,7 +25,16 @@ from openai import APIError, OpenAI
 from pydantic import ValidationError
 
 from retry_policy import run_with_backoff
-from schema import AnalysisReport, ExecutiveMemory, RiskPoint, SceneAnalysis, TranscriptionWord
+from schema import (
+    AnalysisReport,
+    ExecutiveMemory,
+    MagicRefinementResult,
+    RiskPoint,
+    RiskScanResult,
+    RiskTargetCandidate,
+    SceneAnalysis,
+    TranscriptionWord,
+)
 from runtime_paths import get_writable_app_root
 
 # ---------------------------------------------------------------------------
@@ -309,6 +319,54 @@ def _salvage_analysis_report_from_truncated_json(raw: str) -> AnalysisReport | N
     return salvage_truncated_analysis_report(raw)
 
 
+def _salvage_risk_scan_result(raw: str, original_error: Exception) -> RiskScanResult | None:
+    """
+    阶段一 JSON 截断时的最大努力抢救：
+    1. 尝试从已截断的 JSON 中解析 scene_analysis；
+    2. 成功时返回含空 targets 的 RiskScanResult（总比崩溃好）；
+    3. 解析失败返回 None，由调用方决定是否抛异常。
+    """
+    if not (raw or "").strip():
+        return None
+    # 先尝试完整解析（带 try 双保险）
+    try:
+        return RiskScanResult.model_validate_json(raw)
+    except Exception:
+        pass
+    # 从截断 JSON 中提取 scene_analysis
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # 逆向裁剪至最后合法 `}`
+        for i in range(len(raw) - 1, -1, -1):
+            if raw[i] == "}":
+                try:
+                    data = json.loads(raw[: i + 1])
+                    break
+                except json.JSONDecodeError:
+                    continue
+        else:
+            return None
+    if not isinstance(data, dict):
+        return None
+    sa_raw = data.get("scene_analysis")
+    if not isinstance(sa_raw, dict):
+        return None
+    try:
+        sa = SceneAnalysis.model_validate(sa_raw)
+    except (ValidationError, Exception):
+        return None
+    targets_raw = data.get("targets") or []
+    valid_targets: list[RiskTargetCandidate] = []
+    if isinstance(targets_raw, list):
+        for item in targets_raw:
+            try:
+                valid_targets.append(RiskTargetCandidate.model_validate(item))
+            except (ValidationError, Exception):
+                continue
+    return RiskScanResult(scene_analysis=sa, targets=valid_targets)
+
+
 def _validation_suggests_truncated_json(e: ValidationError) -> bool:
     for err in e.errors():
         if err.get("type") == "json_invalid":
@@ -521,6 +579,122 @@ def _build_system_prompt(
 """
 
 
+def _clamp_word_span(start_word_index: int, end_word_index: int, n_words: int) -> tuple[int, int] | None:
+    if n_words <= 0:
+        return None
+    sw = int(start_word_index)
+    ew = int(end_word_index)
+    sw = max(0, min(sw, n_words - 1))
+    ew = max(0, min(ew, n_words - 1))
+    if sw > ew:
+        sw, ew = ew, sw
+    return sw, ew
+
+
+def _build_risk_scan_system_prompt(
+    schema_str: str,
+    explicit_context: dict[str, Any] | None,
+    qa_text: str,
+    company_background: str = "",
+    historical_memories: list[ExecutiveMemory] | None = None,
+) -> str:
+    """V9.6 阶段一：仅扫描靶点，不要求输出完整 Tier / improvement。"""
+    ctx = _normalize_explicit_context(explicit_context)
+    kb = (qa_text or "").strip()
+    kb_block = kb if kb else "未提供参考QA知识库。"
+    sniper_block = _format_sniper_block(ctx["sniper_targets_json"])
+    _bg_use = (company_background or "").strip()
+    _company_bg_block = (
+        f"<COMPANY_BACKGROUND>\n{_bg_use}\n</COMPANY_BACKGROUND>"
+        if _bg_use
+        else ""
+    )
+    _hist_use = _format_historical_profile_block(historical_memories)
+    _hist_block = (
+        f"<HISTORICAL_PROFILE>\n{_hist_use}\n</HISTORICAL_PROFILE>"
+        if _hist_use
+        else ""
+    )
+    return f"""你是拥有 15 年经验的尽调与路演复盘架构师。当前任务为**阶段一：找靶子**。
+你只负责从带 [index] 词索引的转写稿中扫描**发言人侧**应答风险位置，输出结构化靶点列表；不要写长篇改进话术（阶段二会逐点深评）。
+
+<CONTEXT>
+业务场景：{ctx["biz_type"]}
+双方角色：{ctx["exact_roles"]}
+项目：{ctx["project_name"]}
+被访谈对象：{ctx["interviewee"]}
+录音标识：{ctx["recording_label"]}
+狙击清单（JSON）：{sniper_block}
+备注：{ctx["session_notes"]}
+</CONTEXT>
+<KNOWLEDGE_BASE>
+{kb_block}
+</KNOWLEDGE_BASE>
+{_company_bg_block}
+{_hist_block}
+<TASK>
+1. 推断 scene_analysis（场景类型与说话人角色关系）。
+2. 列出 risk targets：每项含 start_word_index、end_word_index、problem_description（简练）、risk_type（类型标签）。
+3. 板子打在【发言人】应答上；勿把投资人的质问当成发言人的 risk。
+4. 索引必须来自转写中出现的 [index]；单靶点覆盖时长宜在约 45–60 秒量级（狙击清单项仍遵守原 60 秒纪律）。
+5. 仅输出符合 JSON Schema 的一个对象，键为 scene_analysis、targets。
+</TASK>
+<JSON_SCHEMA>
+{schema_str}
+</JSON_SCHEMA>
+"""
+
+
+def _build_deep_single_risk_system_prompt(
+    schema_str: str,
+    explicit_context: dict[str, Any] | None,
+    qa_text: str,
+    company_background: str = "",
+    historical_memories: list[ExecutiveMemory] | None = None,
+) -> str:
+    """V9.6 阶段二：单靶点深度评估 — 军工/硬科技 IR 顶尖视角。"""
+    ctx = _normalize_explicit_context(explicit_context)
+    kb_block = (qa_text or "").strip() or "未提供参考QA知识库。"
+    _bg_use = (company_background or "").strip()
+    _company_bg_block = (
+        f"<COMPANY_BACKGROUND>\n{_bg_use}\n</COMPANY_BACKGROUND>"
+        if _bg_use
+        else ""
+    )
+    _hist_use = _format_historical_profile_block(historical_memories)
+    _hist_block = (
+        f"<HISTORICAL_PROFILE>\n{_hist_use}\n</HISTORICAL_PROFILE>"
+        if _hist_use
+        else ""
+    )
+    return f"""你是**军工 / 硬科技投资界顶尖 IR 与资本市场沟通专家**，熟悉尽调话术、合规边界与技术产品叙事。
+当前为**阶段二：单点爆破** — 仅针对 user 给出的**单个风险靶点**，输出完整 RiskPoint JSON（含 tier1/tier2/improvement_suggestion 等所有必填字段）。
+
+<CONTEXT>
+业务场景：{ctx["biz_type"]}
+双方角色：{ctx["exact_roles"]}
+项目：{ctx["project_name"]}
+被访谈对象：{ctx["interviewee"]}
+</CONTEXT>
+<KNOWLEDGE_BASE>
+{kb_block}
+</KNOWLEDGE_BASE>
+{_company_bg_block}
+{_hist_block}
+<TASK>
+1. improvement_suggestion 必须**专业、一针见血**，给出发言人可直接复用的应答结构或示例句式（遵守私募合规，禁止保本保收益等表述）。
+2. 必须严格执行量化扣分：填写 score_deduction；deduction_reason 说明扣分依据。
+3. start_word_index / end_word_index 必须与 user 给出的靶点范围一致（系统会再次强制校验）。
+4. is_manual_entry=false，needs_refinement=false，refinement_note=""。
+5. original_text 须与该索引范围的实录一致；禁止抄 QA 冒充。
+6. 仅输出一个 RiskPoint JSON 对象。
+</TASK>
+<JSON_SCHEMA>
+{schema_str}
+</JSON_SCHEMA>
+"""
+
+
 def _make_client(model_key: str) -> tuple[OpenAI, str]:
     if model_key not in ROUTER:
         raise ValueError(f"未知模型键: {model_key}，应为 deepseek / kimi / qwen")
@@ -535,6 +709,118 @@ def _make_client(model_key: str) -> tuple[OpenAI, str]:
     return client, cfg["model"]
 
 
+def _compose_total_deduction_reason(risk_points: list[RiskPoint], total_ded: int) -> str:
+    if not risk_points:
+        return "未发现显著风险点，未执行扣分。"
+    return (
+        f"共 {len(risk_points)} 个风险点，合计扣分 {total_ded} 分；"
+        "各条目依据见 deduction_reason。"
+    )
+
+
+def deep_evaluate_single_risk(
+    words: List[TranscriptionWord],
+    target: RiskTargetCandidate,
+    *,
+    model_choice: str = "deepseek",
+    explicit_context: dict[str, Any] | None = None,
+    qa_text: str = "",
+    company_background: str = "",
+    historical_memories: list[ExecutiveMemory] | None = None,
+) -> RiskPoint:
+    """
+    V9.6 阶段二：针对单个靶点调用 LLM，生成完整 RiskPoint（军工 / 硬科技 IR 深评视角）。
+    """
+    if model_choice not in JUDGE_MODEL_KEYS:
+        raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
+    n = len(words)
+    sw = int(target.start_word_index)
+    ew = int(target.end_word_index)
+    span = _clamp_word_span(sw, ew, n)
+    if span is None:
+        raise ValueError("词列表为空，无法深评")
+    sw, ew = span
+    seg_start = max(0, sw - 40)
+    seg_end = min(n - 1, ew + 40)
+    segment_words = words[seg_start : seg_end + 1]
+    segment_text = " ".join(f"[{w.word_index}]{w.text}" for w in segment_words)
+
+    qa_use = (qa_text or "").strip()
+    qa_use, _ = truncate_qa_text(qa_use, MAX_QA_CHARS)
+
+    schema_str = json.dumps(RiskPoint.model_json_schema(), ensure_ascii=False)
+    system_prompt = _build_deep_single_risk_system_prompt(
+        schema_str,
+        explicit_context,
+        qa_use,
+        company_background,
+        historical_memories=historical_memories,
+    )
+    target_json = json.dumps(
+        {
+            "start_word_index": sw,
+            "end_word_index": ew,
+            "problem_description": target.problem_description,
+            "risk_type": target.risk_type,
+        },
+        ensure_ascii=False,
+    )
+    user_prompt = (
+        f"【风险靶点】\n{target_json}\n\n"
+        "以下是该靶点周边的转写片段（含 [索引] 词锚）：\n\n"
+        f"{segment_text}\n\n"
+        "请输出单个 RiskPoint JSON 对象。"
+    )
+
+    client, model_name = _make_client(model_choice)
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
+
+    def _chat_once():
+        return client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.25,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = run_with_backoff(
+            _chat_once,
+            logger=logger,
+            operation=f"deep_evaluate_single_risk ({model_choice})",
+        )
+    except APIError as e:
+        raise RuntimeError(f"深评 LLM API 失败: {e}") from e
+
+    choice = response.choices[0] if response.choices else None
+    if choice is None or not choice.message or choice.message.content is None:
+        raise RuntimeError("深评 LLM 返回空内容")
+
+    raw_json = choice.message.content.strip()
+    try:
+        rp = RiskPoint.model_validate_json(raw_json)
+    except ValidationError:
+        try:
+            outer = json.loads(raw_json)
+            inner = next((v for v in outer.values() if isinstance(v, dict)), outer)
+            rp = RiskPoint.model_validate(inner)
+        except Exception as e:
+            raise ValueError(f"深评结果不符合 RiskPoint 契约: {e}\n原始: {raw_json[:800]}") from e
+
+    return rp.model_copy(
+        update={
+            "start_word_index": sw,
+            "end_word_index": ew,
+            "needs_refinement": False,
+            "refinement_note": "",
+        }
+    )
+
+
 def evaluate_pitch(
     words: List[TranscriptionWord],
     model_choice: str = "deepseek",
@@ -546,7 +832,7 @@ def evaluate_pitch(
     historical_memories: list[ExecutiveMemory] | None = None,
 ) -> AnalysisReport:
     """
-    使用三巨头之一对逐字稿做场景洞察 + 双层诊断，返回 AnalysisReport。
+    V9.6：两阶段评估 — 先 scan_risk_targets（找靶子），再对每靶点 deep_evaluate_single_risk（单点爆破）。
     explicit_context 建议包含：biz_type, exact_roles, project_name, interviewee；
     可选 session_notes（本段备注）、recording_label（录音文件名标识）。
     """
@@ -577,26 +863,26 @@ def evaluate_pitch(
             except Exception:
                 logger.exception("on_notice 回调失败")
 
-    schema_str = json.dumps(
-        AnalysisReport.model_json_schema(),
-        ensure_ascii=False,
-    )
-    system_prompt = _build_system_prompt(
-        schema_str,
+    bg_use, _ = truncate_company_background(company_background or "")
+
+    scan_schema = json.dumps(RiskScanResult.model_json_schema(), ensure_ascii=False)
+    scan_system = _build_risk_scan_system_prompt(
+        scan_schema,
         explicit_context,
         qa_use,
-        company_background,
+        bg_use,
         historical_memories=historical_memories,
     )
-    user_prompt = (
-        "以下是本场沟通转写（每个词前有 [索引]，请仅使用这些索引作为 start_word_index / end_word_index）：\n\n"
+    scan_user = (
+        "以下是本场沟通转写（每个词前有 [索引]，targets 中索引必须来自这些锚点）：\n\n"
         f"{transcript}"
     )
 
     client, model_name = _make_client(model_choice)
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
 
     logger.info(
-        "调用 LLM: router_key=%s model=%s 词数=%d",
+        "V9.6 两阶段评估: scan router_key=%s model=%s 词数=%d",
         model_choice,
         model_name,
         len(words),
@@ -604,14 +890,12 @@ def evaluate_pitch(
 
     t_api0 = time.monotonic()
 
-    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
-
-    def _chat_once():
+    def _scan_chat():
         return client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "system", "content": scan_system},
+                {"role": "user", "content": scan_user},
             ],
             response_format={"type": "json_object"},
             temperature=0.3,
@@ -619,44 +903,103 @@ def evaluate_pitch(
         )
 
     try:
-        response = run_with_backoff(
-            _chat_once,
+        scan_resp = run_with_backoff(
+            _scan_chat,
             logger=logger,
-            operation=f"LLM chat.completions ({model_choice})",
+            operation=f"risk_scan ({model_choice})",
         )
     except APIError as e:
-        logger.exception("LLM API 请求失败")
+        logger.exception("阶段一扫描 API 失败")
         raise RuntimeError(f"LLM API 请求失败: {e}") from e
     except Exception as e:
-        logger.exception("LLM 调用异常")
+        logger.exception("阶段一扫描异常")
         raise RuntimeError(f"LLM 调用异常: {e}") from e
 
     logger.info(
-        "LLM chat.completions 成功 model=%s 耗时=%.2fs",
+        "阶段一 scan 成功 model=%s 耗时=%.2fs",
         model_name,
         time.monotonic() - t_api0,
     )
 
-    choice = response.choices[0] if response.choices else None
-    if choice is None or not choice.message or choice.message.content is None:
-        raise RuntimeError("LLM 返回空内容")
+    sch = scan_resp.choices[0] if scan_resp.choices else None
+    if sch is None or not sch.message or sch.message.content is None:
+        raise RuntimeError("阶段一 LLM 返回空内容")
 
-    raw_json = choice.message.content.strip()
-    logger.debug("LLM 原始 JSON 长度: %d", len(raw_json))
-
+    raw_scan = sch.message.content.strip()
     try:
-        return AnalysisReport.model_validate_json(raw_json)
-    except ValidationError as e:
-        if _validation_suggests_truncated_json(e):
-            salvaged = _salvage_analysis_report_from_truncated_json(raw_json)
-            if salvaged is not None:
-                logger.warning(
-                    "LLM JSON 疑似截断，已用 risk_points 增量解析抢救 %d 条",
-                    len(salvaged.risk_points),
-                )
-                return salvaged
-        logger.error("AnalysisReport 校验失败: %s\n原始片段: %s", e, raw_json[:2000])
-        raise ValueError(f"模型输出不符合 AnalysisReport 契约: {e}") from e
+        scan = RiskScanResult.model_validate_json(raw_scan)
+    except (ValidationError, Exception) as e:
+        # 尝试从截断 JSON 中抢救 scene_analysis + targets
+        scan = _salvage_risk_scan_result(raw_scan, e)
+        if scan is None:
+            logger.error("RiskScanResult 无法抢救: %s\n原始: %s", e, raw_scan[:2000])
+            raise ValueError(f"模型输出不符合 RiskScanResult 契约: {e}") from e
+        warn_msg = "⚠️ 阶段一扫描结果 JSON 被截断，已抢救 scene_analysis，靶点列表可能不完整。"
+        logger.warning(warn_msg)
+        if callable(on_notice):
+            try:
+                on_notice(warn_msg)
+            except Exception:
+                pass
+
+    n_words = len(words)
+
+    # 预处理靶点：clamp 索引并过滤越界项，保留原始序号供结果排序
+    valid_targets: list[tuple[int, RiskTargetCandidate]] = []
+    for i, t in enumerate(scan.targets):
+        span = _clamp_word_span(t.start_word_index, t.end_word_index, n_words)
+        if span is None:
+            continue
+        sw, ew = span
+        valid_targets.append((i, RiskTargetCandidate(
+            start_word_index=sw,
+            end_word_index=ew,
+            problem_description=t.problem_description,
+            risk_type=t.risk_type,
+        )))
+
+    # 并发深评：每个靶点独立 LLM 调用，I/O 密集型，线程安全
+    # 最多 6 路并发（防止同时涌入过多 API 请求导致限流）
+    max_workers = min(len(valid_targets), 6) if valid_targets else 1
+    results: dict[int, RiskPoint] = {}
+
+    def _eval_one(idx: int, tc: RiskTargetCandidate) -> tuple[int, RiskPoint | None]:
+        try:
+            rp = deep_evaluate_single_risk(
+                words,
+                tc,
+                model_choice=model_choice,
+                explicit_context=explicit_context,
+                qa_text=qa_use,
+                company_background=bg_use,
+                historical_memories=historical_memories,
+            )
+            return idx, rp
+        except Exception:
+            logger.exception("靶点 %d 深评失败，已跳过该条", idx)
+            return idx, None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_eval_one, idx, tc): idx for idx, tc in valid_targets}
+        for future in as_completed(futures):
+            idx, rp = future.result()
+            if rp is not None:
+                results[idx] = rp
+
+    # 按原始靶点顺序排列（保证报告稳定性）
+    risk_points: list[RiskPoint] = [results[idx] for idx in sorted(results.keys())]
+
+    total_ded = sum(int(r.score_deduction or 0) for r in risk_points)
+    total_ded = min(100, max(0, total_ded))
+    score = max(0, min(100, 100 - total_ded))
+    reason = _compose_total_deduction_reason(risk_points, total_ded)
+
+    return AnalysisReport(
+        scene_analysis=scan.scene_analysis,
+        total_score=score,
+        total_score_deduction_reason=reason,
+        risk_points=risk_points,
+    )
 
 
 def distill_executive_memory_from_diff(
@@ -901,6 +1244,123 @@ def refine_risk_point(
         "refinement_note": "",
     })
     return rp
+
+
+def refine_single_risk_point(
+    risk_point_id: str,
+    user_instruction: str,
+    context_text: str,
+    original_suggestion: str,
+    *,
+    model_choice: str = "deepseek",
+    explicit_context: dict[str, Any] | None = None,
+    qa_text: str = "",
+) -> MagicRefinementResult:
+    """
+    V9.6「魔法对话框」后端：按业务员微调指令重写单条 improvement_suggestion。
+    返回带 risk_point_id 的结构化结果，供前端写回 Session / 草稿。
+    """
+    if model_choice not in JUDGE_MODEL_KEYS:
+        raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
+    inst = (user_instruction or "").strip()
+    if not inst:
+        raise ValueError("user_instruction 不能为空")
+    rid = (risk_point_id or "").strip() or "unknown"
+
+    # context_text 截断保护：超长时截取头部（约 4000 字），防 token 超限
+    _ctx_raw = (context_text or "").strip()
+    _ctx_use = _ctx_raw[:4000] if len(_ctx_raw) > 4000 else _ctx_raw
+    if len(_ctx_raw) > 4000:
+        logger.warning(
+            "refine_single_risk_point: context_text 超过 4000 字（实际 %d 字），已截取头部",
+            len(_ctx_raw),
+        )
+
+    ctx = _normalize_explicit_context(explicit_context)
+    kb_block = (qa_text or "").strip() or "未提供参考QA知识库。"
+    mini_schema = json.dumps(
+        {
+            "type": "object",
+            "required": ["improvement_suggestion"],
+            "properties": {
+                "improvement_suggestion": {
+                    "type": "string",
+                    "description": "按用户指令重写后的完整改进建议正文",
+                }
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    system_prompt = f"""你是军工/硬科技投资界顶尖 IR 专家。主理人要对一条「改进建议」做局部重写。
+仅输出一个 JSON 对象，且必须包含键 improvement_suggestion（字符串）。
+
+<CONTEXT>
+业务场景：{ctx["biz_type"]}
+双方角色：{ctx["exact_roles"]}
+项目：{ctx["project_name"]}
+被访谈对象：{ctx["interviewee"]}
+</CONTEXT>
+<KNOWLEDGE_BASE>
+{kb_block}
+</KNOWLEDGE_BASE>
+
+<TASK>
+1. 严格服从 <USER_INSTRUCTION>，在保留事实与合规的前提下重写建议正文。
+2. 遵守私募合规：禁止保本保收益、禁止过度承诺。
+3. 可引用 <CONTEXT_TEXT> 中的事实，勿捏造录音中不存在的内容。
+</TASK>
+
+JSON 形状约束：
+{mini_schema}"""
+
+    user_prompt = (
+        f"<ORIGINAL_SUGGESTION>\n{(original_suggestion or '').strip()}\n</ORIGINAL_SUGGESTION>\n\n"
+        f"<CONTEXT_TEXT>\n{_ctx_use}\n</CONTEXT_TEXT>\n\n"
+        f"<USER_INSTRUCTION>\n{inst}\n</USER_INSTRUCTION>\n\n"
+        "请仅输出 JSON。"
+    )
+
+    client, model_name = _make_client(model_choice)
+    max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
+
+    def _chat_once():
+        return client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.35,
+            max_tokens=max_tokens,
+        )
+
+    try:
+        response = run_with_backoff(
+            _chat_once,
+            logger=logger,
+            operation=f"refine_single_risk_point ({model_choice})",
+        )
+    except APIError as e:
+        raise RuntimeError(f"魔法对话框 LLM API 失败: {e}") from e
+
+    choice = response.choices[0] if response.choices else None
+    if choice is None or not choice.message or choice.message.content is None:
+        raise RuntimeError("魔法对话框 LLM 返回空内容")
+
+    raw_json = choice.message.content.strip()
+    try:
+        data = json.loads(raw_json)
+        if not isinstance(data, dict):
+            raise ValueError("根须为对象")
+        inner = next((v for v in data.values() if isinstance(v, dict)), data)
+        sug = str(inner.get("improvement_suggestion", "")).strip()
+        if not sug:
+            raise ValueError("improvement_suggestion 为空")
+        return MagicRefinementResult(risk_point_id=rid, improvement_suggestion=sug)
+    except (json.JSONDecodeError, TypeError, ValueError) as e:
+        raise ValueError(f"魔法对话框 JSON 无效: {e}\n原始: {raw_json[:800]}") from e
 
 
 def polish_manual_risk_point(
