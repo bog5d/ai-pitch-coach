@@ -581,6 +581,11 @@ def _build_system_prompt(
 
 【四、公司背景与本次指令冲突仲裁（COMPANY_BACKGROUND）】：
 - 若 SNIPER_TARGETS（狙击清单）与 COMPANY_BACKGROUND（公司常态化背景）存在矛盾，以 SNIPER_TARGETS 指令为准，并在该风险点的 deduction_reason 中注明差异。
+
+【tier1 首句格式（强制）】：
+tier1_general_critique 的第一句必须是 ≤25 字的内部风险排查语言摘要，动词开头，
+格式示例："营收预测与财务口径存在巨大分歧"、"项目落地时间表模糊，订单确定性不足"、"供应链话语权较弱，回款条件苛刻"。
+第二句起可展开推理细节。禁止第一句以连接词、背景铺垫或感叹词开头。
 </CONSTRAINTS>
 <JSON_SCHEMA>
 {schema_str}
