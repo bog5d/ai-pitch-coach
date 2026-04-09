@@ -689,29 +689,24 @@ def _v3_render_single_stem_review(stem: str) -> None:
             f"片段 #{idx + 1} · {'人工增补' if is_manual else 'AI 提取'} · {rid}",
             expanded=False,
         ):
+            # ── 默认展示：4 个核心字段 ──
             st.selectbox(
                 "严重程度",
                 options=["严重", "一般", "轻微"],
                 key=f"v3rp_{stem}_{rid}_lvl",
             )
-            st.text_area(
-                "Tier 1 · 顶尖视角",
-                key=f"v3rp_{stem}_{rid}_t1",
-                height=100,
-            )
-            st.text_area(
-                "Tier 2 · QA 对齐",
-                key=f"v3rp_{stem}_{rid}_t2",
-                height=100,
-            )
+
+            # 问题背景：取 tier1 首句（读 session_state，回退到 draft dict）
+            tier1_raw = st.session_state.get(f"v3rp_{stem}_{rid}_t1") or rp.get("tier1_general_critique", "")
+            summary = _extract_tier1_summary(tier1_raw)
+            if summary:
+                st.markdown(f"**问题背景**：{summary}")
+            else:
+                st.caption("问题背景：（待 AI 生成）")
+
             st.text_area(
                 "改进建议",
                 key=f"v3rp_{stem}_{rid}_im",
-                height=80,
-            )
-            st.text_area(
-                "扣分原因 / QA 口径偏离说明",
-                key=f"v3rp_{stem}_{rid}_ded",
                 height=80,
             )
             st.text_area(
@@ -720,6 +715,35 @@ def _v3_render_single_stem_review(stem: str) -> None:
                 height=100,
                 help="模型洗稿后的口述实录，可编辑；将写入 HTML「发言人口述实录」区块。",
             )
+
+            # ── 音频试听 ──
+            if not is_manual and audio_fs_path.is_file():
+                sw, ew = int(rp.get("start_word_index", 0)), int(rp.get("end_word_index", 0))
+                blob = snippet_audio_mp3_bytes(audio_fs_path, words_models, sw, ew)
+                if blob:
+                    st.audio(io.BytesIO(blob), format="audio/mpeg")
+                else:
+                    st.caption("（无法生成该片段试听，请检查词索引）")
+            elif is_manual:
+                st.caption("人工条目无词级切片与自动试听。")
+
+            # ── 专家视图（折叠）：tier1 全文、tier2、扣分原因 ──
+            if st.toggle("专家视图 ▸", key=f"v3rp_{stem}_{rid}_expert_view"):
+                st.text_area(
+                    "Tier 1 · 顶尖视角（全文）",
+                    key=f"v3rp_{stem}_{rid}_t1",
+                    height=100,
+                )
+                st.text_area(
+                    "Tier 2 · QA 对齐",
+                    key=f"v3rp_{stem}_{rid}_t2",
+                    height=100,
+                )
+                st.text_area(
+                    "扣分原因 / QA 口径偏离说明",
+                    key=f"v3rp_{stem}_{rid}_ded",
+                    height=80,
+                )
 
             # ── V8.0 第二道防线：精炼标记与批示 ──
             st.divider()
@@ -737,16 +761,6 @@ def _v3_render_single_stem_review(stem: str) -> None:
                     placeholder="例如：重点检验财务数据一致性，改进建议要更具体",
                     help="精炼时注入 LLM 的方向指令，留空则 AI 自主深化。",
                 )
-
-            if not is_manual and audio_fs_path.is_file():
-                sw, ew = int(rp.get("start_word_index", 0)), int(rp.get("end_word_index", 0))
-                blob = snippet_audio_mp3_bytes(audio_fs_path, words_models, sw, ew)
-                if blob:
-                    st.audio(io.BytesIO(blob), format="audio/mpeg")
-                else:
-                    st.caption("（无法生成该片段试听，请检查词索引）")
-            elif is_manual:
-                st.caption("人工条目无词级切片与自动试听。")
 
             if st.button(
                 "🗑️ 删除此片段",
