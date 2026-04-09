@@ -4,6 +4,28 @@
 
 ---
 
+## [V9.6.1] — 2026-04-09 · 稳定性四连修（同事反馈专项）
+
+V9.6 生产运行后同事反馈四类稳定性问题，本版本为外科手术修复，零新功能引入，228 passed（全绿）。
+
+### 修复（4 项）
+
+| # | 问题描述 | 根因 | 修复位置 |
+|---|---------|------|---------|
+| Fix 1 | 多音频批处理时，第二个及后续文件音频无声音、无法播放 | `app.py` 将 `work_audio`（网关压缩临时文件，ASR 后已 `unlink`）存入 session_state，而非原始 `audio_path` | `app.py`：`v3_ctx_{stem}["audio_path"]` 改为存原始 `audio_path` |
+| Fix 2 | 审查台翻车片段信息过载，8 个字段一屏堆砌，视觉疲劳 | expander 内平铺所有字段，专业字段对非技术用户无价值 | `app.py`：重构为"4 字段默认展示 + 专家视图 `st.toggle` 折叠"；新增 `_extract_tier1_summary` 提取首句摘要；Prompt 强制 tier1 首句 ≤25 字动词开头 |
+| Fix 3 | 偶发"0分崩溃"——LLM 输出 30+ 个风险点，Pydantic 校验失败/总分崩 | Prompt 无数量上限约束，LLM 自由发挥 | `src/llm_judge.py`：Prompt 追加"严重 ≤3 / 一般 ≤4 / 轻微 ≤3 / 总计 ≤10"硬约束 + 质量门槛 |
+| Fix 4 | 审查台出现全空白翻车片段卡片 | LLM 输出空壳 `RiskPoint`（tier1/improvement 均为空字符串），未过滤直接落盘 | `src/llm_judge.py` + `src/job_pipeline.py`：新增 `_is_valid_risk_point` 守门函数，空壳条目在落盘前过滤 |
+
+### 新增测试（4 文件，20 cases）
+
+- `tests/test_fix1_audio_path.py`（3 cases）：gateway 删除后原始音频仍存在，小文件路径正确，多文件互不干扰
+- `tests/test_fix2_tier1_summary.py`（7 cases）：Prompt 格式约束 + `_extract_tier1_summary` 六边界
+- `tests/test_fix3_risk_count_constraint.py`（4 cases）：Prompt 含数量上限 / 严重上限 / 质量门槛 / 禁止凑数
+- `tests/test_fix4_empty_risk_filter.py`（6 cases）：空 tier1 / 空白 tier1 / 空 improvement / 有效通过 / 空壳 salvage / 有效 salvage 保留
+
+---
+
 ## [V9.6] — 2026-04-03 · 两阶段深评 · 并发硬化版
 
 V9.1 稳定后的全面进化：Cursor 搭建三大新架构（两阶段评估引擎、ASR 轻量润色管道、魔法对话框 API），总工程师完成深度审计并修复 4 处技术隐患，全量测试从 190 → 208 passed（零回归破坏）。

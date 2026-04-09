@@ -30,7 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent
 
 # 发版时与主理人约定版本对齐；ZIP / 交付文件夹名均由此派生
-CURRENT_VERSION = "V9.6"
+CURRENT_VERSION = "V9.6.1"
 OUT_NAME = f"AI路演教练_纯净交付版_{CURRENT_VERSION}"
 OUT = ROOT / OUT_NAME
 
@@ -61,6 +61,7 @@ OPTIONAL_ROOT_FILES = [
     "V8.6_新功能与体验大升级.txt",
     "V9.1_三大顽疾根治版_说明.txt",
     "V9.6_两阶段深评并发硬化版_说明.txt",
+    "V9.6.1_稳定性四连修版_说明.txt",
     ".env.example",
 ]
 
