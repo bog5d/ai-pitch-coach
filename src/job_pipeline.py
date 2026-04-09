@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from asr_polish import polish_transcription_text
-from llm_judge import evaluate_pitch, truncate_company_background
+from llm_judge import _is_valid_risk_point, evaluate_pitch, truncate_company_background
 from memory_engine import (
     load_top_executive_memories_for_prompt,
     record_executive_memory_prompt_hits,
@@ -219,6 +219,10 @@ def run_pitch_file_job(
     else:
         _line("✂️ 找茬完毕！正在疯狂裁剪原声音频，为您装订绝美复盘报告...")
     report_for_disk = apply_asr_original_text_override(report, words)
+    # Fix 4: 落盘前过滤空壳 RiskPoint，防止空白卡片进入审查台
+    report_for_disk.risk_points = [
+        rp for rp in report_for_disk.risk_points if _is_valid_risk_point(rp)
+    ]
     params.analysis_json_path.write_text(
         json.dumps(report_for_disk.model_dump(), ensure_ascii=False, indent=2),
         encoding="utf-8",

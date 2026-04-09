@@ -286,6 +286,13 @@ def salvage_risk_point_dicts_from_truncated_llm_json(raw: str) -> list[dict[str,
     return None
 
 
+def _is_valid_risk_point(rp: RiskPoint) -> bool:
+    """空壳 RiskPoint 守门：tier1 和 improvement_suggestion 均非空才算有效。"""
+    return bool((rp.tier1_general_critique or "").strip()) and bool(
+        (rp.improvement_suggestion or "").strip()
+    )
+
+
 def salvage_truncated_analysis_report(raw: str) -> AnalysisReport | None:
     """将截断 LLM 输出抢救为可展示的 AnalysisReport；无法抢救时返回 None。"""
     dicts = salvage_risk_point_dicts_from_truncated_llm_json(raw)
@@ -297,6 +304,8 @@ def salvage_truncated_analysis_report(raw: str) -> AnalysisReport | None:
             risks.append(RiskPoint.model_validate(d))
         except ValidationError:
             continue
+    # Fix 4: 过滤空壳 RiskPoint（tier1 或 improvement 为空）
+    risks = [rp for rp in risks if _is_valid_risk_point(rp)]
     if not risks:
         return None
     total_ded = sum(int(r.score_deduction or 0) for r in risks)
