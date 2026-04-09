@@ -83,6 +83,23 @@ from schema import AnalysisReport, RiskPoint, TranscriptionWord
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
 
+def _extract_tier1_summary(tier1: str) -> str:
+    """
+    提取 tier1_general_critique 的首句作为「问题背景」摘要。
+    优先找第一个中文句末标点（。；！？）且位置 ≤40，回退到前 40 字 + 省略号。
+    """
+    text = (tier1 or "").strip()
+    if not text:
+        return ""
+    for sep in ["。", "；", "！", "？"]:
+        idx = text.find(sep)
+        if 0 < idx <= 40:
+            return text[: idx + 1]
+    if len(text) <= 40:
+        return text
+    return text[:40] + "…"
+
+
 def _v86_risk_point_harvest_blob(rp: dict) -> str:
     """审查台单条风险点：拼接可比对文本，供静默收割防噪门使用。"""
     if not rp:
@@ -1974,7 +1991,7 @@ def main() -> None:
                     st.session_state[f"v3_initial_report_{stem}"] = copy.deepcopy(draft)
                     st.session_state[f"words_{stem}"] = [w.model_dump() for w in words]
                     st.session_state[f"v3_ctx_{stem}"] = {
-                        "audio_path": str(work_audio),
+                        "audio_path": str(audio_path),   # Fix 1: 始终存原始音频路径，work_audio 是临时文件可能被删
                         "analysis_json": str(analysis_json),
                         "html_path": str(html_path),
                         "project_name": project_name,
