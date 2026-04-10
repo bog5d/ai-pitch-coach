@@ -68,6 +68,7 @@ def _make_params(tmp_path: Path):
         },
         qa_text="",
         model_choice="deepseek",
+        skip_asr_polish=True,
     )
 
 
@@ -222,6 +223,97 @@ class TestCachedWordsWritesTranscriptionJson:
 
         data = json.loads((tmp_path / "trans.json").read_text(encoding="utf-8"))
         assert len(data) == 4
+
+
+class TestCachedWordsSkipsPolish:
+    """cached_words 传入时不应调用 polish_transcription_text（缓存内已是润色版）。"""
+
+    def test_polish_not_called_when_cache_hit(self, tmp_path):
+        """内存/磁盘缓存命中时，跳过 ASR 润色（防二次润色漂移）。"""
+        from job_pipeline import run_pitch_file_job, PitchFileJobParams
+        from schema import TranscriptionWord, AnalysisReport, SceneAnalysis
+
+        audio = tmp_path / "test.wav"
+        audio.write_bytes(b"fake")
+        cached = [
+            TranscriptionWord(
+                word_index=i, text=t, start_time=float(i) * 0.5,
+                end_time=float(i) * 0.5 + 0.4, speaker_id="spk_a"
+            )
+            for i, t in enumerate(("已润色词甲", "已润色词乙"))
+        ]
+
+        report = AnalysisReport(
+            scene_analysis=SceneAnalysis(scene_type="测试", speaker_roles="A vs B"),
+            total_score=85, total_score_deduction_reason="测试", risk_points=[],
+        )
+        params = PitchFileJobParams(
+            transcription_json_path=tmp_path / "trans.json",
+            analysis_json_path=tmp_path / "analysis.json",
+            html_output_path=tmp_path / "report.html",
+            sensitive_words=[],
+            explicit_context={
+                "biz_type": "01_机构路演", "exact_roles": "A vs B",
+                "project_name": "proj", "interviewee": "张三",
+                "session_notes": "", "sniper_targets_json": "[]",
+                "recording_label": "test.wav",
+            },
+            qa_text="", model_choice="deepseek",
+            skip_asr_polish=False,  # 不手动关闭，验证缓存命中时自动跳过
+        )
+
+        with (
+            patch("job_pipeline.transcribe_audio"),
+            patch("job_pipeline.evaluate_pitch", return_value=report),
+            patch("job_pipeline.apply_asr_original_text_override", return_value=report),
+            patch("job_pipeline.polish_transcription_text") as mock_polish,
+        ):
+            run_pitch_file_job(audio, params, skip_html_export=True, cached_words=cached)
+
+        mock_polish.assert_not_called()
+
+    def test_polish_called_when_no_cache(self, tmp_path):
+        """非缓存路径（首次转写）在 skip_asr_polish=False 时仍应调用润色。"""
+        from job_pipeline import run_pitch_file_job, PitchFileJobParams
+        from schema import TranscriptionWord, AnalysisReport, SceneAnalysis
+
+        audio = tmp_path / "test.wav"
+        audio.write_bytes(b"fake")
+        words = [
+            TranscriptionWord(
+                word_index=i, text=f"词{i}", start_time=float(i),
+                end_time=float(i) + 0.9, speaker_id="spk_a"
+            )
+            for i in range(2)
+        ]
+        report = AnalysisReport(
+            scene_analysis=SceneAnalysis(scene_type="测试", speaker_roles="A vs B"),
+            total_score=85, total_score_deduction_reason="测试", risk_points=[],
+        )
+        params = PitchFileJobParams(
+            transcription_json_path=tmp_path / "trans.json",
+            analysis_json_path=tmp_path / "analysis.json",
+            html_output_path=tmp_path / "report.html",
+            sensitive_words=[],
+            explicit_context={
+                "biz_type": "01_机构路演", "exact_roles": "A vs B",
+                "project_name": "proj", "interviewee": "张三",
+                "session_notes": "", "sniper_targets_json": "[]",
+                "recording_label": "test.wav",
+            },
+            qa_text="", model_choice="deepseek",
+            skip_asr_polish=False,
+        )
+
+        with (
+            patch("job_pipeline.transcribe_audio", return_value=words),
+            patch("job_pipeline.evaluate_pitch", return_value=report),
+            patch("job_pipeline.apply_asr_original_text_override", return_value=report),
+            patch("job_pipeline.polish_transcription_text", return_value=words) as mock_polish,
+        ):
+            run_pitch_file_job(audio, params, skip_html_export=True)
+
+        mock_polish.assert_called_once()
 
 
 class TestFileMd5Logic:

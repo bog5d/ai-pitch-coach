@@ -171,7 +171,7 @@ def run_pitch_file_job(
             f"✅ 转写完成，共计约 {char_est} 字（{len(words)} 个词级锚点）。"
         )
 
-    if not params.skip_asr_polish and words:
+    if not params.skip_asr_polish and words and cached_words is None:
         _line("⏱️ 正在对 ASR 实录做轻量润色（错别字与标点，保留词级时间戳）…")
         words = polish_transcription_text(
             words,
