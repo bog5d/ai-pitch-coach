@@ -167,8 +167,8 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
 
     _ks = "".join(c if c.isalnum() or c in "_-" else "_" for c in company_id)[:48]
 
-    stats = get_company_dashboard_stats(company_id)
     pairs = list_all_executive_memories_for_company(company_id)
+    stats = get_company_dashboard_stats(company_id, pre_loaded_pairs=pairs)
 
     last_disp = stats["last_updated_at"] or "—"
     if last_disp != "—" and "T" in last_disp:

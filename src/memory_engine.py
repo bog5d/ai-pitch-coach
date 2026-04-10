@@ -185,6 +185,11 @@ def append_executive_memory(
     store_dir: Path | None = None,
 ) -> None:
     items = load_executive_memories(company_id, tag, store_dir=store_dir)
+    # 幂等防重：raw_text 完全相同视为重复（防快速双击锁定导出二次收割）
+    existing_raw = {(m.raw_text or "").strip() for m in items}
+    if (item.raw_text or "").strip() in existing_raw:
+        logger.debug("append_executive_memory: raw_text 已存在，跳过重复入库（幂等保护）")
+        return
     items.append(item)
     save_executive_memories(company_id, tag, items, store_dir=store_dir)
 
@@ -377,11 +382,13 @@ def get_company_dashboard_stats(
     company_id: str,
     *,
     store_dir: Path | None = None,
+    pre_loaded_pairs: list | None = None,
 ) -> dict[str, Any]:
     """
     V9.0 机构画像：仅按 **当前 company_id** 聚合 `.executive_memory` 下该公司目录，绝不跨公司。
 
     返回结构稳定，无数据时为零值/空列表，供 UI 与 Plotly 安全消费。
+    pre_loaded_pairs：调用方已加载的 (stem_tag, ExecutiveMemory) 列表，传入时跳过磁盘读取（减少双倍 IO）。
     """
     empty: dict[str, Any] = {
         "total_memories": 0,
@@ -399,7 +406,10 @@ def get_company_dashboard_stats(
         return empty
 
     try:
-        pairs = list_all_executive_memories_for_company(cid, store_dir=store_dir)
+        if pre_loaded_pairs is not None:
+            pairs = pre_loaded_pairs
+        else:
+            pairs = list_all_executive_memories_for_company(cid, store_dir=store_dir)
     except Exception:
         logger.exception("get_company_dashboard_stats 读取失败，返回空结构")
         return empty

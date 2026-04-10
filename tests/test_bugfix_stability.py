@@ -154,3 +154,108 @@ class TestCoerceSecondsPair:
     def test_invalid_value_returns_none(self):
         result = self._coerce({"begin_time": "abc", "end_time": "xyz"})
         assert result is None
+
+
+# ════════════════════════════════════════════════════════
+# T5  BUG-7: append_executive_memory 防重复入库
+# ════════════════════════════════════════════════════════
+
+class TestAppendExecutiveMemoryIdempotent:
+    """同一 raw_text 的记忆不应被重复入库（防双击 race）。"""
+
+    def _make_mem(self, raw_text: str, correction: str = "标准口径"):
+        from schema import ExecutiveMemory
+        import uuid as uuid_mod
+        return ExecutiveMemory(
+            uuid=str(uuid_mod.uuid4()),
+            tag="张三",
+            raw_text=raw_text,
+            correction=correction,
+            weight=1.0,
+            risk_type="一般",
+            updated_at="2026-04-10T00:00:00Z",
+            hit_count=0,
+        )
+
+    def test_duplicate_raw_text_not_appended(self, tmp_path):
+        """raw_text 完全相同的记忆再次 append 时，总条数不增加。"""
+        from memory_engine import append_executive_memory, load_executive_memories
+
+        mem1 = self._make_mem("表达含糊，缺乏数据支撑")
+        mem2 = self._make_mem("表达含糊，缺乏数据支撑")  # 相同 raw_text，不同 uuid
+
+        append_executive_memory("test_co", "张三", mem1, store_dir=tmp_path)
+        append_executive_memory("test_co", "张三", mem2, store_dir=tmp_path)
+
+        items = load_executive_memories("test_co", "张三", store_dir=tmp_path)
+        assert len(items) == 1, f"期望 1 条，实际 {len(items)} 条（重复入库）"
+
+    def test_different_raw_text_both_appended(self, tmp_path):
+        """raw_text 不同的两条记忆均应入库。"""
+        from memory_engine import append_executive_memory, load_executive_memories
+
+        mem1 = self._make_mem("问题 A")
+        mem2 = self._make_mem("问题 B")
+
+        append_executive_memory("test_co", "张三", mem1, store_dir=tmp_path)
+        append_executive_memory("test_co", "张三", mem2, store_dir=tmp_path)
+
+        items = load_executive_memories("test_co", "张三", store_dir=tmp_path)
+        assert len(items) == 2
+
+    def test_empty_store_appends_normally(self, tmp_path):
+        """空桶首次追加，正常入库。"""
+        from memory_engine import append_executive_memory, load_executive_memories
+
+        mem = self._make_mem("首次入库")
+        append_executive_memory("new_co", "李四", mem, store_dir=tmp_path)
+
+        items = load_executive_memories("new_co", "李四", store_dir=tmp_path)
+        assert len(items) == 1
+
+
+# ════════════════════════════════════════════════════════
+# T6  BUG-6: get_company_dashboard_stats 支持预传 pairs 避免双倍 IO
+# ════════════════════════════════════════════════════════
+
+class TestDashboardStatsAcceptsPairs:
+    """get_company_dashboard_stats 接受 pre_loaded_pairs 时，不再读磁盘。"""
+
+    def _make_mem(self):
+        from schema import ExecutiveMemory
+        import uuid as uuid_mod
+        return ExecutiveMemory(
+            uuid=str(uuid_mod.uuid4()),
+            tag="王总",
+            raw_text="示例记忆",
+            correction="标准口径",
+            weight=1.5,
+            risk_type="严重",
+            updated_at="2026-04-10T10:00:00Z",
+            hit_count=3,
+        )
+
+    def test_stats_with_pre_loaded_pairs_skips_disk_read(self):
+        """传入 pre_loaded_pairs 时，list_all_executive_memories_for_company 不被调用。"""
+        from memory_engine import get_company_dashboard_stats
+        from unittest.mock import patch
+
+        mem = self._make_mem()
+        pairs = [("王总", mem)]
+
+        with patch("memory_engine.list_all_executive_memories_for_company") as mock_list:
+            stats = get_company_dashboard_stats("test_co", pre_loaded_pairs=pairs)
+
+        mock_list.assert_not_called()
+        assert stats["total_memories"] == 1
+        assert stats["active_executives"] == 1
+
+    def test_stats_without_pre_loaded_reads_disk(self):
+        """不传 pre_loaded_pairs 时，仍走磁盘读取路径（兼容旧调用方）。"""
+        from memory_engine import get_company_dashboard_stats
+        from unittest.mock import patch
+
+        with patch("memory_engine.list_all_executive_memories_for_company", return_value=[]) as mock_list:
+            get_company_dashboard_stats("test_co")
+
+        mock_list.assert_called_once()
