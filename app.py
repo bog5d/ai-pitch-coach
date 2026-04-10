@@ -536,7 +536,9 @@ def _v3_snapshot_report_for_draft(stem: str) -> dict:
 
 
 def _v3_build_report_dict_from_widgets(stem: str) -> dict:
-    draft = st.session_state[f"report_draft_{stem}"]
+    draft = st.session_state.get(f"report_draft_{stem}")
+    if not draft:
+        return {}
     rps_out: list[dict] = []
     for rp in draft.get("risk_points") or []:
         rid = rp.get("_rid")

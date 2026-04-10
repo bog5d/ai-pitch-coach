@@ -259,3 +259,54 @@ class TestDashboardStatsAcceptsPairs:
             get_company_dashboard_stats("test_co")
 
         mock_list.assert_called_once()
+
+
+# ════════════════════════════════════════════════════════
+# T9  BUG-9: 说话人 ID 分配行为固化（设计意图文档）
+# ════════════════════════════════════════════════════════
+
+class TestAssignAutoSpeakerIds:
+    """固化 _assign_auto_speaker_ids 当前行为；注释澄清设计意图，不修改运行时逻辑。
+
+    设计说明：有标注段打断后，下一段匿名词获新 ID（auto_spk_N+1）。
+    这是刻意设计：两段匿名发言可能来自不同说话人，不应强行合并。
+    """
+
+    def test_consecutive_none_get_same_id(self):
+        from transcriber import _assign_auto_speaker_ids
+        result = _assign_auto_speaker_ids([None, None, None])
+        assert result == ["auto_spk_0", "auto_spk_0", "auto_spk_0"]
+
+    def test_labeled_segment_between_anon_creates_new_id(self):
+        """None → "A" → None 时，第二段 None 获新 ID（当前设计意图）。"""
+        from transcriber import _assign_auto_speaker_ids
+        result = _assign_auto_speaker_ids([None, "A", None])
+        assert result[0] == "auto_spk_0"
+        assert result[1] == "A"
+        assert result[2] == "auto_spk_1"  # 新 ID，这是设计意图
+
+    def test_all_labeled_no_auto(self):
+        from transcriber import _assign_auto_speaker_ids
+        result = _assign_auto_speaker_ids(["A", "B", "A"])
+        assert result == ["A", "B", "A"]
+
+    def test_empty_input(self):
+        from transcriber import _assign_auto_speaker_ids
+        assert _assign_auto_speaker_ids([]) == []
+
+    def test_single_none(self):
+        from transcriber import _assign_auto_speaker_ids
+        result = _assign_auto_speaker_ids([None])
+        assert result == ["auto_spk_0"]
+
+    def test_multiple_anon_groups(self):
+        """多段匿名段，每次被标注词打断后 ID 递增。"""
+        from transcriber import _assign_auto_speaker_ids
+        result = _assign_auto_speaker_ids([None, None, "A", None, "B", None, None])
+        assert result[0] == "auto_spk_0"
+        assert result[1] == "auto_spk_0"
+        assert result[2] == "A"
+        assert result[3] == "auto_spk_1"
+        assert result[4] == "B"
+        assert result[5] == "auto_spk_2"
+        assert result[6] == "auto_spk_2"
