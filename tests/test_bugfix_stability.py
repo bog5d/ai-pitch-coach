@@ -399,3 +399,55 @@ class TestStage1TruncationMarkerPersisted:
 
         reason = report.total_score_deduction_reason or ""
         assert "截断" not in reason, f"不应含截断标记，实际: {reason!r}"
+
+
+# ════════════════════════════════════════════════════════
+# T10  BUG-10: detect_logical_conflict FP 上限
+# ════════════════════════════════════════════════════════
+
+class TestDetectLogicalConflictFpLimit:
+    """detect_logical_conflict 输出告警条数 ≤ 3；4 字通用词不触发。"""
+
+    def test_too_many_snipers_capped_at_3_warnings(self):
+        """20 条狙击目标全部命中，总告警数仍 ≤ 3。"""
+        import json
+        from llm_judge import detect_logical_conflict
+
+        bg = "我们是专注于硬科技的投资机构，深耕新能源市场，注重供应链安全管理。" * 10
+        snipers = [{"quote": f"q{i}", "reason": f"硬科技投资机构市场空间管理{i}"} for i in range(20)]
+        warnings = detect_logical_conflict(bg, json.dumps(snipers))
+        assert len(warnings) <= 3, f"告警数 {len(warnings)} 超过上限 3"
+
+    def test_4char_common_word_no_false_positive(self):
+        """4 字通用词（如'投资机构'）不应触发冲突告警（改为 5 字最小窗口后）。"""
+        import json
+        from llm_judge import detect_logical_conflict
+
+        bg = "我们是一家投资机构，专注于硬科技领域。"
+        # 4 字词，滑窗改为 5 字后不命中
+        snipers = [{"quote": "测试", "reason": "投资机构"}]
+        warnings = detect_logical_conflict(bg, json.dumps(snipers))
+        assert len(warnings) == 0, f"4 字通用词不应触发，实际: {warnings}"
+
+    def test_specific_5char_keyword_triggers_warning(self):
+        """5 字以上的具体词组仍能正常触发冲突告警。"""
+        import json
+        from llm_judge import detect_logical_conflict
+
+        bg = "我们核心产品是指挥控制系统，在军工领域领先。"
+        # '指挥控制' = 4 字，不触发；'指挥控制系统' = 6 字，触发
+        snipers = [{"quote": "某问题", "reason": "指挥控制系统"}]
+        warnings = detect_logical_conflict(bg, json.dumps(snipers))
+        assert len(warnings) >= 1, f"5+ 字具体词组应触发告警，实际: {warnings}"
+
+    def test_empty_sniper_no_warning(self):
+        from llm_judge import detect_logical_conflict
+        warnings = detect_logical_conflict("公司背景", "[]")
+        assert warnings == []
+
+    def test_empty_background_no_warning(self):
+        import json
+        from llm_judge import detect_logical_conflict
+        snipers = [{"quote": "test", "reason": "某指控"}]
+        warnings = detect_logical_conflict("", json.dumps(snipers))
+        assert warnings == []

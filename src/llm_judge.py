@@ -108,17 +108,17 @@ def detect_logical_conflict(company_background: str, sniper_targets_json: str) -
         reason = str(item.get("reason", "")).strip()
         if not reason:
             continue
-        # 按常见分隔符拆词，取长度 > 2 的片段做关键词
+        # 按常见分隔符拆词，取长度 > 4 的片段做关键词（5 字以上才触发，避免通用词 FP）
         fragments = re.split(r"[，,、。.；;\s]+", reason)
         matched_frag: str = ""
         for frag in fragments:
             frag = frag.strip()
-            if len(frag) > 2 and frag in bg:
+            if len(frag) > 4 and frag in bg:
                 matched_frag = frag
                 break
         # 如果分隔符拆词未命中，进一步用滑动窗口（步长3~8字）查找共现关键词
         if not matched_frag:
-            for win in range(4, min(len(reason) + 1, 9)):
+            for win in range(5, min(len(reason) + 1, 9)):
                 for start in range(0, len(reason) - win + 1):
                     sub = reason[start:start + win]
                     if sub in bg:
@@ -130,7 +130,7 @@ def detect_logical_conflict(company_background: str, sniper_targets_json: str) -
             warnings.append(
                 f"潜在冲突：狙击目标「{reason[:30]}」中的关键词「{matched_frag}」出现在公司背景描述中，请确认口径一致性"
             )
-    return warnings
+    return warnings[:3]
 
 
 # 三巨头官方兼容 OpenAI 的路由配置

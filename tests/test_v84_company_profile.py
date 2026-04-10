@@ -258,12 +258,12 @@ def test_detect_logical_conflict_no_conflict():
 
 
 def test_detect_logical_conflict_detects_overlap():
-    """狙击目标 reason 关键词与背景内容重叠时返回非空警告列表。"""
+    """狙击目标 reason 关键词（5字以上）与背景内容重叠时返回非空警告列表。"""
     from llm_judge import detect_logical_conflict
     import json
-    # 背景说"资金用途明确"，狙击说"资金用途不一致"
+    # 背景说"资金用途明确"，狙击说"资金用途明确前后说法不一致"（5字"资金用途明"可滑窗命中）
     background = "公司资金用途明确，专注主营业务投入，无分散资金风险。"
-    snipers = json.dumps([{"quote": "资金用途这块", "reason": "资金用途前后说法不一致"}])
+    snipers = json.dumps([{"quote": "资金用途这块", "reason": "资金用途明确前后说法不一致"}])
     result = detect_logical_conflict(background, snipers)
     assert isinstance(result, list)
     assert len(result) >= 1
@@ -303,6 +303,7 @@ def test_pipeline_passes_company_background_to_evaluate(tmp_path):
         explicit_context=jp.build_explicit_context("01_机构路演", "测试项目", "张三"),
         qa_text="",
         company_background="ABC资本成立于2015年，专注早期投资",
+        skip_asr_polish=True,
     )
 
     with (
@@ -343,6 +344,7 @@ def test_pipeline_truncates_long_company_background(tmp_path):
         explicit_context=jp.build_explicit_context("01_机构路演", "p", "i"),
         qa_text="",
         company_background=long_bg,
+        skip_asr_polish=True,
     )
 
     with (
