@@ -536,7 +536,7 @@ def _dashscope_poll_task_rest(api_key: str, task_id: str) -> list[Any]:
     poll_interval = 2.0
 
     while time.time() < deadline:
-        resp = _requests_post_with_retry(url, headers=headers, timeout=120)
+        resp = _requests_get_with_retry(url, headers=headers, timeout=120)
         if resp.status_code != 200:
             raise RuntimeError(f"阿里云查询任务 HTTP {resp.status_code}: {resp.text[:800]}")
         body = resp.json()
