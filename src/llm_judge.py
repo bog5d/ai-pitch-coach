@@ -88,7 +88,7 @@ def truncate_company_background(bg: str, max_chars: int = MAX_COMPANY_BG_CHARS) 
 def detect_logical_conflict(company_background: str, sniper_targets_json: str) -> list[str]:
     """
     检测公司背景与狙击目标之间的潜在逻辑冲突（冲突报警机制）。
-    简单关键词重叠检测：若狙击 reason 中长度>2 的词片段出现在背景中，触发警告。
+    简单关键词重叠检测：若狙击 reason 中长度>4（5 字以上）的词片段出现在背景中，触发警告；总告警数上限 3 条。
     返回警告字符串列表；无冲突或输入为空时返回 []。
     """
     bg = (company_background or "").strip()
