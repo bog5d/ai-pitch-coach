@@ -310,3 +310,92 @@ class TestAssignAutoSpeakerIds:
         assert result[4] == "B"
         assert result[5] == "auto_spk_2"
         assert result[6] == "auto_spk_2"
+
+
+# ════════════════════════════════════════════════════════
+# T8  BUG-1: 阶段一截断标记持久化到 AnalysisReport
+# ════════════════════════════════════════════════════════
+
+class TestStage1TruncationMarkerPersisted:
+    """阶段一 JSON 被截断且走 salvage 路径时，最终报告应含截断警告。"""
+
+    def _make_words(self, n=5):
+        from schema import TranscriptionWord
+        return [
+            TranscriptionWord(
+                word_index=i, text=f"词{i}",
+                start_time=float(i), end_time=float(i) + 0.9,
+                speaker_id="spk_a"
+            )
+            for i in range(n)
+        ]
+
+    def test_deduction_reason_contains_truncation_note_when_salvage_used(self):
+        """simulate: 阶段一解析失败 → salvage → targets=[] → 最终 report 含截断提示。"""
+        from schema import RiskScanResult, SceneAnalysis
+        from unittest.mock import MagicMock, patch
+
+        words = self._make_words()
+
+        # salvage 返回空靶点（截断情景）
+        salvaged_scan = RiskScanResult(
+            scene_analysis=SceneAnalysis(scene_type="截断测试", speaker_roles="A vs B"),
+            targets=[],
+        )
+
+        # 阶段一 LLM 响应（假设返回损坏 JSON）
+        scan_choice = MagicMock()
+        scan_choice.message.content = '{"broken": true'  # 损坏 JSON，触发 salvage
+
+        scan_response = MagicMock()
+        scan_response.choices = [scan_choice]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = scan_response
+
+        with (
+            patch("llm_judge._make_client", return_value=(mock_client, "deepseek-chat")),
+            patch("llm_judge._salvage_risk_scan_result", return_value=salvaged_scan) as mock_salvage,
+            patch("llm_judge.run_with_backoff", side_effect=lambda fn, **kw: fn()),
+            patch("llm_judge.RiskScanResult.model_validate_json", side_effect=Exception("truncated")),
+        ):
+            from llm_judge import evaluate_pitch
+            report = evaluate_pitch(words, explicit_context={}, qa_text="")
+
+        mock_salvage.assert_called_once()
+        # 核心断言：截断标记出现在 deduction_reason 里
+        assert "截断" in (report.total_score_deduction_reason or ""), (
+            f"期望 total_score_deduction_reason 含'截断'，实际: {report.total_score_deduction_reason!r}"
+        )
+
+    def test_no_truncation_note_when_parse_succeeds(self):
+        """正常解析成功时，不注入截断提示。"""
+        from schema import RiskScanResult, SceneAnalysis
+        from unittest.mock import MagicMock, patch
+
+        words = self._make_words()
+
+        # 正常 scan 结果（无靶点，合法）
+        normal_scan = RiskScanResult(
+            scene_analysis=SceneAnalysis(scene_type="正常测试", speaker_roles="A vs B"),
+            targets=[],
+        )
+
+        scan_choice = MagicMock()
+        scan_choice.message.content = '{"scene_analysis": {}, "targets": []}'
+        scan_response = MagicMock()
+        scan_response.choices = [scan_choice]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = scan_response
+
+        with (
+            patch("llm_judge._make_client", return_value=(mock_client, "deepseek-chat")),
+            patch("llm_judge.RiskScanResult.model_validate_json", return_value=normal_scan),
+            patch("llm_judge.run_with_backoff", side_effect=lambda fn, **kw: fn()),
+        ):
+            from llm_judge import evaluate_pitch
+            report = evaluate_pitch(words, explicit_context={}, qa_text="")
+
+        reason = report.total_score_deduction_reason or ""
+        assert "截断" not in reason, f"不应含截断标记，实际: {reason!r}"

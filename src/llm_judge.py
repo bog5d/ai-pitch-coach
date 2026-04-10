@@ -860,6 +860,8 @@ def evaluate_pitch(
     if model_choice not in JUDGE_MODEL_KEYS:
         raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
 
+    _stage1_truncated = False
+
     transcript = format_transcript_for_llm(words)
     if not transcript.strip():
         raise ValueError("转写词列表为空，无法评估")
@@ -957,6 +959,7 @@ def evaluate_pitch(
             raise ValueError(f"模型输出不符合 RiskScanResult 契约: {e}") from e
         warn_msg = "⚠️ 阶段一扫描结果 JSON 被截断，已抢救 scene_analysis，靶点列表可能不完整。"
         logger.warning(warn_msg)
+        _stage1_truncated = True
         if callable(on_notice):
             try:
                 on_notice(warn_msg)
@@ -1015,12 +1018,21 @@ def evaluate_pitch(
     score = max(0, min(100, 100 - total_ded))
     reason = _compose_total_deduction_reason(risk_points, total_ded)
 
-    return AnalysisReport(
+    report = AnalysisReport(
         scene_analysis=scan.scene_analysis,
         total_score=score,
         total_score_deduction_reason=reason,
         risk_points=risk_points,
     )
+
+    if _stage1_truncated:
+        _note = "⚠️【阶段一扫描被截断】风险点列表可能不完整，建议重试或缩短录音。"
+        _existing = (report.total_score_deduction_reason or "").strip()
+        report = report.model_copy(update={
+            "total_score_deduction_reason": (_note + " " + _existing).strip()
+        })
+
+    return report
 
 
 def distill_executive_memory_from_diff(
