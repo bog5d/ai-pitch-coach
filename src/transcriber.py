@@ -132,8 +132,8 @@ def _coerce_seconds_pair(w: dict[str, Any]) -> tuple[float, float] | None:
     if s is not None and e is not None:
         try:
             fs, fe = float(s), float(e)
-            # 毫秒启发式：大于 300 且明显像毫秒
-            if fs > 300 or fe > 300:
+            # 阈值提高至 86400（24 小时），覆盖绝大多数正常录音时长
+            if fs > 86400 or fe > 86400:
                 return fs / 1000.0, fe / 1000.0
             return fs, fe
         except (TypeError, ValueError):
@@ -144,9 +144,8 @@ def _coerce_seconds_pair(w: dict[str, Any]) -> tuple[float, float] | None:
     if s is not None and e is not None:
         try:
             fs, fe = float(s), float(e)
-            if fs > 300 or fe > 300:
-                return fs / 1000.0, fe / 1000.0
-            return fs, fe
+            # begin_time/end_time 来自阿里云 SDK，固定为毫秒，无需启发式
+            return fs / 1000.0, fe / 1000.0
         except (TypeError, ValueError):
             pass
 

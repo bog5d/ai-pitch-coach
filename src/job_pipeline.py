@@ -51,6 +51,7 @@ DEFAULT_HTML_FILENAME_MASKS: dict[str, str] = {
 
 def safe_fs_segment(name: str) -> str:
     s = re.sub(r'[<>:"/\\|?*\n\r\t]', "_", name.strip())
+    s = s[:200]
     return s or "未命名批次"
 
 
