@@ -1,34 +1,17 @@
 """
-Analytics JSON 导出层 — V10.0 数据飞轮。
+Analytics JSON 导出层 — V10.1 双态覆写。
 
-每次锁定生成 HTML 时，在 analysis_json 同目录下静默生成
-{stem}_analytics.json，包含得分、风险分布、精炼次数等结构化字段，
-为后续跨公司数据分析打基础。
+写入时机：
+  1. AI 分析完成（初稿就绪）→ status="draft"，refinement/ai_miss 为 0
+  2. 用户在审查台锁定导出 → status="locked"，更新所有字段为最终值
+
+同一个 stem 始终写同一个文件（{stem}_analytics.json），locked 覆盖 draft，
+保证"凡运行必留痕"，不依赖用户是否修改或锁定。
 
 设计原则：
 - 失败时返回 None 并静默跳过，绝不影响主流程（HTML/JSON 生成）
 - 不依赖 Streamlit session_state，只接收已完成的 report 和 ctx
-- 不改 schema.py，不改 AnalysisReport 结构
-
-输出格式示例：
-{
-  "session_id": "uuid-v4",
-  "generated_at": "2026-04-11T10:00:00Z",
-  "version": "V10.0",
-  "company_id": "迪策资本",
-  "interviewee": "李志新",
-  "biz_type": "01_机构路演",
-  "total_score": 72,
-  "total_risk_count": 3,
-  "risk_breakdown": {
-    "严重": {"count": 1, "total_deduction": 15},
-    "一般": {"count": 1, "total_deduction": 8},
-    "轻微": {"count": 1, "total_deduction": 5}
-  },
-  "refinement_count": 1,
-  "ai_miss_count": 1,
-  "stage1_truncated": false
-}
+- session_id 由 stem 名确定性生成，同一 stem 始终相同（uuid5）
 """
 from __future__ import annotations
 
@@ -44,9 +27,11 @@ from schema import AnalysisReport
 
 logger = logging.getLogger(__name__)
 
-_ANALYTICS_VERSION = "V10.0"
+_ANALYTICS_VERSION = "V10.1"
 # 截断标记关键词（与 llm_judge.py BUG-1 修复对齐）
 _TRUNCATION_KEYWORDS = ("截断", "salvage", "被截断")
+# uuid5 namespace for deterministic session_id based on stem
+_SESSION_NS = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")  # uuid.NAMESPACE_URL
 
 
 def _iso_now_utc_z() -> str:
@@ -88,13 +73,17 @@ def _is_stage1_truncated(report: AnalysisReport) -> bool:
 def export_analytics(
     report: AnalysisReport,
     ctx: dict,
+    *,
+    status: str = "locked",
 ) -> Path | None:
     """
-    基于锁定后的报告和上下文，生成 analytics JSON 并落盘。
+    基于报告和上下文，生成（或覆写）analytics JSON 并落盘。
 
     参数：
-        report: 已完成审查台编辑、经 apply_asr_original_text_override 处理的报告。
-        ctx: v3_ctx_{stem} 字典，含 analysis_json、company_id、interviewee 等。
+        report  : AnalysisReport 对象（draft 时为 AI 初稿，locked 时为最终版）。
+        ctx     : v3_ctx_{stem} 字典，含 analysis_json、company_id、interviewee 等。
+        status  : "draft"（AI 生成完毕，用户未审查）或 "locked"（用户锁定导出后）。
+                  locked 会覆盖同 stem 的 draft 记录。
 
     返回：
         成功时返回 analytics 文件的 Path；写入失败时静默返回 None。
@@ -102,21 +91,35 @@ def export_analytics(
     try:
         analysis_json_path = Path(ctx.get("analysis_json", ""))
         if not analysis_json_path.parent.exists():
-            # 目录不存在，无法写入，静默返回
             return None
 
         analytics_path = analysis_json_path.parent / (
             analysis_json_path.stem + "_analytics.json"
         )
 
+        # 确定性 session_id：同一 stem 始终相同，locked 覆盖 draft 时 ID 不变
+        stem_name = analysis_json_path.stem
+        session_id = str(uuid.uuid5(_SESSION_NS, stem_name))
+
+        # draft 覆写时保留原始生成时间；locked 时更新为当前时间
+        generated_at = _iso_now_utc_z()
+        if status == "locked" and analytics_path.exists():
+            try:
+                existing = json.loads(analytics_path.read_text(encoding="utf-8"))
+                generated_at = existing.get("generated_at", generated_at)
+            except (json.JSONDecodeError, OSError):
+                pass
+
         payload = {
-            "session_id": str(uuid.uuid4()),
-            "generated_at": _iso_now_utc_z(),
+            "session_id": session_id,
+            "generated_at": generated_at,
+            "locked_at": _iso_now_utc_z() if status == "locked" else None,
+            "status": status,
             "version": _ANALYTICS_VERSION,
             "company_id": (ctx.get("company_id") or "").strip(),
             "interviewee": (ctx.get("interviewee") or "").strip(),
             "biz_type": (ctx.get("biz_type") or "").strip(),
-            "recording_label": analysis_json_path.stem,
+            "recording_label": stem_name,
             "total_score": report.total_score,
             "total_risk_count": len(report.risk_points),
             "risk_breakdown": _build_risk_breakdown(report),
@@ -127,7 +130,7 @@ def export_analytics(
                 1 for rp in report.risk_points if rp.is_manual_entry
             ),
             "stage1_truncated": _is_stage1_truncated(report),
-            "risk_type_counts": _build_risk_type_counts(report),  # V10.1 成长引擎
+            "risk_type_counts": _build_risk_type_counts(report),
         }
 
         serialized = json.dumps(payload, ensure_ascii=False, indent=2)

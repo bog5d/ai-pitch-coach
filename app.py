@@ -151,8 +151,134 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> int:
 
 
 def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -> None:
-    """V9.0 全景机构画像：KPI + Plotly + 下钻表 + 删除/调权重（严格按当前 company_id 聚合）。
-    V10.0 新增：底部「行业基准对比」区块（workspace_root 传入时自动扫描 analytics JSON 聚合）。"""
+    """V10.1 复盘数据中台：4-Tab 架构（会话总览/个人成长/行业基准/AI纠偏库）。"""
+    st.markdown("## 📂 复盘数据中台")
+    if not company_id or company_id == "__new__":
+        st.warning("请先在侧栏选择项目档案后再查看数据中台。")
+        return
+
+    ws_path = Path((workspace_root or "").strip() or str(get_writable_app_root()))
+
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📊 会话总览",
+        "👤 个人成长",
+        "🌐 行业基准",
+        "🧠 AI纠偏库",
+    ])
+
+    # ════════════════════════════════════════════════
+    # Tab 1：会话总览 — 每次运行都留痕（analytics JSON）
+    # ════════════════════════════════════════════════
+    with tab1:
+        _render_session_overview(company_id, ws_path)
+
+    # ════════════════════════════════════════════════
+    # Tab 2：个人成长 — 成长曲线 + 雷达图 + 练习推荐
+    # ════════════════════════════════════════════════
+    with tab2:
+        from memory_engine import list_all_executive_memories_for_company
+        pairs = list_all_executive_memories_for_company(company_id)
+        _render_personal_growth_section(company_id, workspace_root, pairs)
+
+    # ════════════════════════════════════════════════
+    # Tab 3：行业基准 — 匿名跨项目对比
+    # ════════════════════════════════════════════════
+    with tab3:
+        _render_benchmark_section(workspace_root)
+
+    # ════════════════════════════════════════════════
+    # Tab 4：AI纠偏库 — 专属错题本（只在用户纠正AI后入库）
+    # ════════════════════════════════════════════════
+    with tab4:
+        _render_ai_correction_library(company_id)
+
+
+def _render_session_overview(company_id: str, ws_path: Path) -> None:
+    """Tab 1：会话总览 — 从 analytics JSON 聚合，凡运行必有记录。"""
+    import plotly.express as px
+    from benchmark_engine import scan_analytics_files
+
+    all_items = scan_analytics_files(ws_path)
+    items = [s for s in all_items if s.get("company_id", "").strip() == company_id.strip()]
+
+    # ── 全局 KPI ──────────────────────────────────────────────────────────
+    total = len(items)
+    people = sorted({s.get("interviewee", "").strip() for s in items if s.get("interviewee", "").strip()})
+    locked = sum(1 for s in items if s.get("status") == "locked")
+    avg_score = round(sum(s.get("total_score", 0) for s in items) / total, 1) if total else 0.0
+
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("总复盘场次", total, help="包含 AI 初稿（草稿）和已锁定导出的场次")
+        c2.metric("已锁定场次", locked)
+        c3.metric("覆盖人数", len(people))
+        c4.metric("项目均分", f"{avg_score:.1f}" if total else "—")
+
+    if total == 0:
+        st.info(
+            "📭 本项目暂无复盘记录。\n\n"
+            "**下一步**：在主控制台选择本项目，上传录音并运行 AI 分析，"
+            "系统将自动在此留下每一场记录（无需锁定）。"
+        )
+        return
+
+    # ── 得分趋势折线图 ────────────────────────────────────────────────────
+    import re as _re
+
+    sorted_items = sorted(items, key=lambda x: x.get("generated_at", ""))
+    if len(sorted_items) >= 2:
+        st.caption("▸ 历次得分趋势（按生成时间排序）")
+        _labels, _scores, _people, _statuses = [], [], [], []
+        for s in sorted_items:
+            m = _re.search(r"(\d{4})-(\d{2})-(\d{2})", s.get("generated_at", ""))
+            _labels.append(f"{m.group(2)}/{m.group(3)}" if m else "—")
+            _scores.append(s.get("total_score", 0))
+            _people.append(s.get("interviewee", "—"))
+            _statuses.append("✅已锁定" if s.get("status") == "locked" else "📝草稿")
+
+        import plotly.graph_objects as go
+        fig_trend = go.Figure()
+        fig_trend.add_trace(go.Scatter(
+            x=_labels, y=_scores,
+            mode="lines+markers",
+            marker=dict(
+                size=10,
+                color=["#22c55e" if st == "✅已锁定" else "#94a3b8" for st in _statuses],
+                symbol=["circle" if st == "✅已锁定" else "circle-open" for st in _statuses],
+            ),
+            line=dict(color="#3b82f6", width=2),
+            text=[f"{p}<br>{sc}分 {st}" for p, sc, st in zip(_people, _scores, _statuses)],
+            hovertemplate="%{text}<extra></extra>",
+        ))
+        fig_trend.update_layout(
+            height=260, margin=dict(t=10, b=10),
+            yaxis=dict(range=[max(0, min(_scores) - 10), 105], title="综合得分"),
+            xaxis_title="复盘场次",
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+        st.caption("🟢 实心绿点 = 已锁定导出　⚪ 空心灰点 = AI草稿未锁定")
+
+    # ── 会话记录列表 ─────────────────────────────────────────────────────
+    st.caption("▸ 全部会话记录（倒序，点击表头可排序）")
+    rows = []
+    for s in reversed(sorted_items):
+        dt = s.get("generated_at", "")[:10]
+        rb = s.get("risk_breakdown") or {}
+        rows.append({
+            "日期": dt,
+            "被访谈人": s.get("interviewee", "—"),
+            "得分": s.get("total_score", "—"),
+            "状态": "✅锁定" if s.get("status") == "locked" else "📝草稿",
+            "严重风险": rb.get("严重", {}).get("count", 0),
+            "一般风险": rb.get("一般", {}).get("count", 0),
+            "AI纠错数": s.get("refinement_count", 0),
+            "人工补录": s.get("ai_miss_count", 0),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_ai_correction_library(company_id: str) -> None:
+    """Tab 4：AI纠偏库 — 专属错题本（原 全景机构画像 核心内容）。"""
     from memory_engine import (
         delete_executive_memory_by_uuid,
         get_company_dashboard_stats,
@@ -160,276 +286,106 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
         update_executive_memory_weight,
     )
 
-    st.markdown("## 🛰️ 全景机构画像 · 数据指挥中心")
-    if not company_id or company_id == "__new__":
-        st.warning("请先在侧栏选择具体公司档案（非「新建公司」状态）后再查看指挥中心。")
-        return
-
     _ks = "".join(c if c.isalnum() or c in "_-" else "_" for c in company_id)[:48]
-
     pairs = list_all_executive_memories_for_company(company_id)
     stats = get_company_dashboard_stats(company_id, pre_loaded_pairs=pairs)
 
-    last_disp = stats["last_updated_at"] or "—"
-    if last_disp != "—" and "T" in last_disp:
-        last_disp = last_disp.replace("T", " ").replace("Z", " UTC")[:19]
-
-    try:
-        with st.container(border=True):
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("沉淀总经验数", f"{stats['total_memories']:,}")
-            k2.metric("覆盖高管数", f"{stats['active_executives']:,}")
-            k3.metric("高频命中总数", f"{stats['total_hit_count']:,}")
-            k4.metric("最近一次更新", last_disp)
-    except TypeError:
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("沉淀总经验数", f"{stats['total_memories']:,}")
-        k2.metric("覆盖高管数", f"{stats['active_executives']:,}")
-        k3.metric("高频命中总数", f"{stats['total_hit_count']:,}")
-        k4.metric("最近一次更新", last_disp)
-
-    try:
-        import plotly.express as px
-    except ImportError:
-        px = None
-        st.warning("请执行 `pip install plotly` 后刷新页面以加载图表。")
-
-    if px is not None and stats["total_memories"] > 0:
-        st.subheader("交互分析")
-        col_l, col_r = st.columns([6, 4])
-        by_exec = stats["executive_hit_trends"]["by_executive"]
-        rd = stats["risk_distribution"]
-
-        with col_l:
-            st.markdown("**高管战力 · 累计命中**")
-            if by_exec:
-                df_bar = pd.DataFrame(by_exec)
-                fig_bar = px.bar(
-                    df_bar,
-                    x="tag",
-                    y="total_hits",
-                    template="plotly_white",
-                    labels={"tag": "高管 / Tag", "total_hits": "累计命中"},
-                    hover_data=["memory_count"],
-                    color_discrete_sequence=["#2563eb"],
-                )
-                fig_bar.update_layout(
-                    xaxis=dict(showgrid=False, title=None),
-                    yaxis=dict(showgrid=False, zeroline=True),
-                    plot_bgcolor="rgba(255,255,255,0)",
-                    margin=dict(t=24, b=40, l=40, r=16),
-                    height=380,
-                )
-                st.plotly_chart(fig_bar, use_container_width=True)
-            else:
-                st.caption("暂无按高管聚合数据。")
-
-        with col_r:
-            st.markdown("**核心雷区 · 风险类型占比**")
-            if rd:
-                names = list(rd.keys())
-                vals = list(rd.values())
-                top_label = max(rd, key=rd.get)
-                abbr = top_label[:2] if len(top_label) >= 2 else (top_label or "—")
-                fig_pie = px.pie(
-                    names=names,
-                    values=vals,
-                    hole=0.4,
-                    template="plotly_white",
-                    color_discrete_sequence=px.colors.sequential.Blues_r,
-                )
-                fig_pie.update_traces(
-                    textposition="inside",
-                    textinfo="percent+label",
-                    hovertemplate="<b>%{label}</b><br>条数: %{value}<br>占比: %{percent}<extra></extra>",
-                )
-                fig_pie.update_layout(
-                    showlegend=True,
-                    legend=dict(orientation="h", yanchor="bottom", y=-0.25, x=0),
-                    margin=dict(t=24, b=80, l=16, r=16),
-                    height=380,
-                    annotations=[
-                        dict(
-                            text=f"<b>{abbr}</b>",
-                            x=0.5,
-                            y=0.5,
-                            xref="paper",
-                            yref="paper",
-                            showarrow=False,
-                            font=dict(size=22, color="#1e3a5f"),
-                        )
-                    ],
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-            else:
-                st.caption("暂无风险类型分布。")
-
-        daily = stats["executive_hit_trends"].get("daily_activity") or []
-        if len(daily) > 1:
-            st.markdown("**记忆触达日分布**（按 `updated_at` 日期计条数）")
-            df_d = pd.DataFrame(daily)
-            fig_line = px.line(
-                df_d,
-                x="date",
-                y="count",
-                markers=True,
-                template="plotly_white",
-                labels={"date": "日期", "count": "当日有条目的记忆数"},
-            )
-            fig_line.update_traces(line_color="#2563eb", marker=dict(size=8))
-            fig_line.update_layout(
-                xaxis=dict(showgrid=False),
-                yaxis=dict(showgrid=False),
-                plot_bgcolor="white",
-                height=280,
-                margin=dict(t=12, b=40, l=40, r=16),
-            )
-            st.plotly_chart(fig_line, use_container_width=True)
-
-        # ── V10.0 飞轮速度看板 ──────────────────────────────────────
-        fm = stats.get("flywheel_metrics", {})
-        if fm:
-            st.markdown("---")
-            st.subheader("⚡ 飞轮速度指数")
-            fa, fb, fc = st.columns(3)
-            hit_rate_pct = round(fm.get("hit_rate", 0) * 100, 1)
-            fa.metric("记忆命中率", f"{hit_rate_pct}%",
-                      help="至少被注入一次的记忆占总记忆比例，越高说明飞轮越活跃")
-            fb.metric("本月新增记忆", fm.get("monthly_new", 0),
-                      help="本月提炼并入库的记忆条数")
-            wd = fm.get("weight_distribution", {})
-            fc.metric("高权重记忆数", wd.get("high", 0),
-                      help="权重 >1.5 的高价值记忆（被多次验证有效）")
-
-            top = fm.get("top_memories") or []
-            if top:
-                st.markdown("**🏆 贡献榜 TOP 10**（按命中次数降序）")
-                df_top = pd.DataFrame(top, columns=["tag", "raw_text_snippet", "hit_count"])
-                df_top.columns = ["高管", "易错要点摘要", "命中次数"]
-                fig_top = px.bar(
-                    df_top,
-                    x="命中次数",
-                    y="高管",
-                    orientation="h",
-                    template="plotly_white",
-                    color_discrete_sequence=["#16a34a"],
-                    hover_data=["易错要点摘要"],
-                )
-                fig_top.update_layout(
-                    yaxis=dict(autorange="reversed", title=None),
-                    xaxis=dict(showgrid=False, title="累计命中次数"),
-                    plot_bgcolor="rgba(255,255,255,0)",
-                    margin=dict(t=12, b=20, l=120, r=16),
-                    height=max(200, len(top) * 36),
-                )
-                st.plotly_chart(fig_top, use_container_width=True)
-        # ── END 飞轮速度看板 ─────────────────────────────────────────
-
-    elif stats["total_memories"] == 0:
-        st.info("暂无记忆。完成批次分析并在审查台锁定导出后，系统将自动提炼并入库。")
-
-    if not pairs:
-        return
-
-    rows = []
-    for stem_tag, mem in pairs:
-        rows.append(
-            {
-                "文件桶": stem_tag,
-                "标签": mem.tag,
-                "风险类型": (mem.risk_type or "").strip() or "—",
-                "易错要点": mem.raw_text,
-                "标准口径": mem.correction,
-                "权重": float(mem.weight),
-                "命中次数": int(mem.hit_count),
-                "最后触发": mem.updated_at or "—",
-                "uuid": mem.uuid,
-            }
-        )
-    all_tags = sorted({r["标签"] for r in rows})
-    all_risks = sorted({r["风险类型"] for r in rows})
-
-    st.subheader("下钻明细")
-    f1, f2 = st.columns(2)
-    with f1:
-        exec_pick = st.selectbox(
-            "按高管筛选",
-            ["全部"] + all_tags,
-            key=f"v90_exec_{_ks}",
-        )
-    with f2:
-        risk_pick = st.multiselect(
-            "按风险类型筛选（不选表示全部）",
-            all_risks,
-            key=f"v90_risk_{_ks}",
-        )
-
-    def _keep(r: dict) -> bool:
-        if exec_pick != "全部" and r["标签"] != exec_pick:
-            return False
-        if risk_pick and r["风险类型"] not in risk_pick:
-            return False
-        return True
-
-    filt = [r for r in rows if _keep(r)]
-    st.dataframe(
-        pd.DataFrame(filt),
-        use_container_width=True,
-        hide_index=True,
+    st.caption(
+        "💡 AI纠偏库只收录**你主动修改过 AI 初稿**的条目——"
+        "这是系统用来下次分析时更精准判断的私有语料，越改越准。"
     )
 
-    st.subheader("外科手术 · 删除 / 调权重")
-    if not filt:
-        st.caption("当前筛选下无行，请调整筛选或清空条件。")
+    # KPI
+    with st.container(border=True):
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("纠偏条目总数", stats["total_memories"])
+        k2.metric("涉及被访人数", stats["active_executives"])
+        k3.metric("累计命中次数", stats["total_hit_count"])
+        last_u = (stats["last_updated_at"] or "—")
+        if "T" in last_u:
+            last_u = last_u[:10]
+        k4.metric("最近更新", last_u)
+
+    if stats["total_memories"] == 0:
+        st.info("暂无纠偏记录。在审查台修改 AI 初稿后锁定，系统将自动提炼并入库。")
         return
 
-    options = [
-        (r["uuid"], f"{r['uuid'][:10]}… │ {str(r['易错要点'])[:36]}…") for r in filt
-    ]
+    # 飞轮速度指数
+    fm = stats.get("flywheel_metrics", {})
+    if fm:
+        import plotly.express as px
+        fa, fb, fc = st.columns(3)
+        fa.metric("记忆命中率", f"{fm.get('hit_rate', 0)*100:.1f}%")
+        fb.metric("本月新增", fm.get("monthly_new", 0))
+        fc.metric("高权重条目", fm.get("weight_distribution", {}).get("high", 0))
+        top = fm.get("top_memories") or []
+        if top:
+            df_top = pd.DataFrame(top, columns=["tag", "raw_text_snippet", "hit_count"])
+            df_top.columns = ["高管", "易错要点", "命中次数"]
+            fig_top = px.bar(
+                df_top, x="命中次数", y="高管", orientation="h",
+                template="plotly_white", color_discrete_sequence=["#16a34a"],
+            )
+            fig_top.update_layout(
+                yaxis=dict(autorange="reversed", title=None),
+                height=max(200, len(top) * 36),
+                margin=dict(t=8, b=8, l=120, r=8),
+            )
+            st.plotly_chart(fig_top, use_container_width=True)
+
+    # 明细表 + 删除/权重调整
+    rows = []
+    for stem_tag, mem in pairs:
+        rows.append({
+            "标签": mem.tag, "风险类型": (mem.risk_type or "—"),
+            "易错要点": mem.raw_text, "标准口径": mem.correction,
+            "权重": float(mem.weight), "命中次数": int(mem.hit_count),
+            "最后触发": (mem.updated_at or "—")[:10], "uuid": mem.uuid,
+        })
+    if not rows:
+        return
+
+    all_tags = sorted({r["标签"] for r in rows})
+    f1, f2 = st.columns(2)
+    with f1:
+        exec_pick = st.selectbox("按被访人筛选", ["全部"] + all_tags, key=f"v90_exec_{_ks}")
+    with f2:
+        all_risks = sorted({r["风险类型"] for r in rows})
+        risk_pick = st.multiselect("按风险类型筛选", all_risks, key=f"v90_risk_{_ks}")
+
+    filt = [r for r in rows
+            if (exec_pick == "全部" or r["标签"] == exec_pick)
+            and (not risk_pick or r["风险类型"] in risk_pick)]
+    st.dataframe(pd.DataFrame(filt), use_container_width=True, hide_index=True)
+
+    if not filt:
+        return
+    options = [(r["uuid"], f"{r['uuid'][:8]}… │ {str(r['易错要点'])[:32]}…") for r in filt]
     uuid_list = [u for u, _ in options]
 
+    st.markdown("**外科手术 · 删除 / 调权重**")
     c1, c2 = st.columns(2)
     with c1:
-        del_u = st.selectbox(
-            "删除条目（伪经验）",
-            options=uuid_list,
-            format_func=lambda u: next(l for uid, l in options if uid == u),
-            key=f"v90_del_{_ks}",
-        )
+        del_u = st.selectbox("删除条目", uuid_list,
+                             format_func=lambda u: next(l for uid, l in options if uid == u),
+                             key=f"v90_del_{_ks}")
         if st.button("🗑️ 删除所选", key=f"v90_del_btn_{_ks}", type="secondary"):
             if delete_executive_memory_by_uuid(company_id, del_u):
-                st.success("已删除。")
-                st.rerun()
+                st.success("已删除。"); st.rerun()
             else:
-                st.error("未找到该条目。")
+                st.error("未找到。")
     with c2:
-        w_u = st.selectbox(
-            "调整权重",
-            options=uuid_list,
-            format_func=lambda u: next(l for uid, l in options if uid == u),
-            key=f"v90_w_{_ks}",
-        )
+        w_u = st.selectbox("调整权重", uuid_list,
+                           format_func=lambda u: next(l for uid, l in options if uid == u),
+                           key=f"v90_w_{_ks}")
         cur_w = next(float(r["权重"]) for r in filt if r["uuid"] == w_u)
-        new_w = st.number_input(
-            "新权重（越大越优先注入 Prompt）",
-            min_value=0.0,
-            max_value=10.0,
-            value=float(cur_w),
-            step=0.1,
-            key=f"v90_w_num_{_ks}",
-        )
+        new_w = st.number_input("新权重", min_value=0.0, max_value=10.0,
+                                value=float(cur_w), step=0.1, key=f"v90_w_num_{_ks}")
         if st.button("💾 应用权重", key=f"v90_w_btn_{_ks}"):
             if update_executive_memory_weight(company_id, w_u, new_w):
-                st.success("已更新权重。")
-                st.rerun()
+                st.success("已更新。"); st.rerun()
             else:
                 st.error("更新失败。")
-
-    # ── V10.1 个人成长中心 ──────────────────────────────────────────────────
-    _render_personal_growth_section(company_id, workspace_root, pairs)
-
-    # ── V10.0 行业基准对比 ──────────────────────────────────────────────────
-    _render_benchmark_section(workspace_root)
 
 
 def _render_personal_growth_section(
@@ -927,8 +883,8 @@ def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     final = html_path.resolve()
     st.session_state[f"v46_preview_html_{stem}"] = str(final)
     harvest_n = _v86_harvest_finalize_if_needed(stem, payload)
-    # V10.0：静默导出 analytics JSON（失败不影响主流程）
-    export_analytics(report_for_disk, ctx)
+    # V10.1：locked 覆写 analytics JSON（覆盖 draft，status="locked"）
+    export_analytics(report_for_disk, ctx, status="locked")
     return final, harvest_n
 
 
@@ -2381,8 +2337,8 @@ def main() -> None:
                     st.session_state[f"report_draft_{stem}"] = draft
                     st.session_state[f"v3_initial_report_{stem}"] = copy.deepcopy(draft)
                     st.session_state[f"words_{stem}"] = [w.model_dump() for w in words]
-                    st.session_state[f"v3_ctx_{stem}"] = {
-                        "audio_path": str(audio_path),   # Fix 1: 始终存原始音频路径，work_audio 是临时文件可能被删
+                    _draft_ctx = {
+                        "audio_path": str(audio_path),
                         "analysis_json": str(analysis_json),
                         "html_path": str(html_path),
                         "project_name": project_name,
@@ -2392,6 +2348,11 @@ def main() -> None:
                         "html_mask_map": dict(html_mask_map),
                         "company_id": mem_cid,
                     }
+                    st.session_state[f"v3_ctx_{stem}"] = _draft_ctx
+
+                    # ── V10.1 凡运行必留痕：AI初稿就绪时立即写 draft analytics ──
+                    export_analytics(report, _draft_ctx, status="draft")
+
                     v3_review_stems.append(stem)
 
                     status.update(

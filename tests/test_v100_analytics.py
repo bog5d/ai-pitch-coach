@@ -223,9 +223,53 @@ class TestExportAnalyticsContent:
         assert str(parsed) == data["session_id"]
 
     def test_version_field(self, tmp_path):
-        """version 字段应为 V10.0。"""
+        """version 字段应为 V10.1。"""
         data = self._load(tmp_path)
-        assert data["version"] == "V10.0"
+        assert data["version"] == "V10.1"
+
+    def test_default_status_is_locked(self, tmp_path):
+        """默认（不传 status）写入的状态应为 locked。"""
+        data = self._load(tmp_path)
+        assert data["status"] == "locked"
+
+    def test_draft_status_field(self, tmp_path):
+        """传 status='draft' 时字段应为 draft。"""
+        from analytics_exporter import export_analytics
+        report = _make_report()
+        ctx = _make_ctx(tmp_path)
+        result = export_analytics(report, ctx, status="draft")
+        data = json.loads(result.read_text(encoding="utf-8"))
+        assert data["status"] == "draft"
+        assert data["locked_at"] is None, "draft 时 locked_at 应为 None"
+
+    def test_session_id_deterministic(self, tmp_path):
+        """同一 stem 两次调用应生成相同的 session_id。"""
+        from analytics_exporter import export_analytics
+        report = _make_report()
+        ctx = _make_ctx(tmp_path)
+        r1 = export_analytics(report, ctx, status="draft")
+        r2 = export_analytics(report, ctx, status="locked")
+        d1 = json.loads(r1.read_text(encoding="utf-8"))
+        d2 = json.loads(r2.read_text(encoding="utf-8"))
+        assert d1["session_id"] == d2["session_id"], "同 stem draft→locked 覆写后 session_id 不变"
+
+    def test_draft_to_locked_preserves_generated_at(self, tmp_path):
+        """draft→locked 覆写时，generated_at 应保留 draft 首次写入时间。"""
+        import time
+        from analytics_exporter import export_analytics
+        report = _make_report()
+        ctx = _make_ctx(tmp_path)
+        r_draft = export_analytics(report, ctx, status="draft")
+        d_draft = json.loads(r_draft.read_text(encoding="utf-8"))
+        generated_at_draft = d_draft["generated_at"]
+
+        time.sleep(0.05)  # 让时间有变化
+        r_locked = export_analytics(report, ctx, status="locked")
+        d_locked = json.loads(r_locked.read_text(encoding="utf-8"))
+
+        assert d_locked["generated_at"] == generated_at_draft, \
+            "locked 覆写应保留 draft 的 generated_at（记录首次运行时间）"
+        assert d_locked["locked_at"] is not None, "locked 覆写后 locked_at 应有值"
 
 
 # ════════════════════════════════════════════════════════
