@@ -286,6 +286,46 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
                 margin=dict(t=12, b=40, l=40, r=16),
             )
             st.plotly_chart(fig_line, use_container_width=True)
+
+        # ── V10.0 飞轮速度看板 ──────────────────────────────────────
+        fm = stats.get("flywheel_metrics", {})
+        if fm:
+            st.markdown("---")
+            st.subheader("⚡ 飞轮速度指数")
+            fa, fb, fc = st.columns(3)
+            hit_rate_pct = round(fm.get("hit_rate", 0) * 100, 1)
+            fa.metric("记忆命中率", f"{hit_rate_pct}%",
+                      help="至少被注入一次的记忆占总记忆比例，越高说明飞轮越活跃")
+            fb.metric("本月新增记忆", fm.get("monthly_new", 0),
+                      help="本月提炼并入库的记忆条数")
+            wd = fm.get("weight_distribution", {})
+            fc.metric("高权重记忆数", wd.get("high", 0),
+                      help="权重 >1.5 的高价值记忆（被多次验证有效）")
+
+            top = fm.get("top_memories") or []
+            if top:
+                st.markdown("**🏆 贡献榜 TOP 10**（按命中次数降序）")
+                df_top = pd.DataFrame(top, columns=["tag", "raw_text_snippet", "hit_count"])
+                df_top.columns = ["高管", "易错要点摘要", "命中次数"]
+                fig_top = px.bar(
+                    df_top,
+                    x="命中次数",
+                    y="高管",
+                    orientation="h",
+                    template="plotly_white",
+                    color_discrete_sequence=["#16a34a"],
+                    hover_data=["易错要点摘要"],
+                )
+                fig_top.update_layout(
+                    yaxis=dict(autorange="reversed", title=None),
+                    xaxis=dict(showgrid=False, title="累计命中次数"),
+                    plot_bgcolor="rgba(255,255,255,0)",
+                    margin=dict(t=12, b=20, l=120, r=16),
+                    height=max(200, len(top) * 36),
+                )
+                st.plotly_chart(fig_top, use_container_width=True)
+        # ── END 飞轮速度看板 ─────────────────────────────────────────
+
     elif stats["total_memories"] == 0:
         st.info("暂无记忆。完成批次分析并在审查台锁定导出后，系统将自动提炼并入库。")
 

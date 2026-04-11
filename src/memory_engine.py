@@ -383,6 +383,64 @@ def record_executive_memory_prompt_hits(
         save_executive_memories(company_id, tag, new_items, store_dir=store_dir)
 
 
+def _build_flywheel_metrics(pairs: list) -> dict[str, Any]:
+    """
+    V10.0 飞轮速度指标：从记忆对列表中聚合飞轮健康度数据。
+
+    返回：
+      hit_rate: 被命中过的记忆比例（0.0~1.0）
+      top_memories: TOP-10 高频命中记忆（tag + raw_text_snippet + hit_count）
+      monthly_new: 本月新增记忆数
+      weight_distribution: 高/中/低权重分布
+    """
+    empty_fm: dict[str, Any] = {
+        "hit_rate": 0.0,
+        "top_memories": [],
+        "monthly_new": 0,
+        "weight_distribution": {"high": 0, "medium": 0, "low": 0},
+    }
+    if not pairs:
+        return empty_fm
+
+    total = len(pairs)
+    hit_count_nonzero = sum(1 for _, m in pairs if int(m.hit_count) > 0)
+    hit_rate = round(hit_count_nonzero / total, 4) if total > 0 else 0.0
+
+    sorted_by_hits = sorted(pairs, key=lambda pm: int(pm[1].hit_count), reverse=True)
+    top_memories = []
+    for _, m in sorted_by_hits[:10]:
+        raw = (m.raw_text or "").strip()
+        snippet = raw[:40] + "…" if len(raw) > 40 else raw
+        top_memories.append({
+            "tag": (m.tag or "").strip(),
+            "raw_text_snippet": snippet,
+            "hit_count": int(m.hit_count),
+        })
+
+    current_ym = datetime.now(timezone.utc).strftime("%Y-%m")
+    monthly_new = sum(
+        1 for _, m in pairs
+        if (m.updated_at or "").startswith(current_ym)
+    )
+
+    wd = {"high": 0, "medium": 0, "low": 0}
+    for _, m in pairs:
+        w = float(m.weight)
+        if w > 1.5:
+            wd["high"] += 1
+        elif w >= 0.5:
+            wd["medium"] += 1
+        else:
+            wd["low"] += 1
+
+    return {
+        "hit_rate": hit_rate,
+        "top_memories": top_memories,
+        "monthly_new": monthly_new,
+        "weight_distribution": wd,
+    }
+
+
 def get_company_dashboard_stats(
     company_id: str,
     *,
@@ -391,10 +449,17 @@ def get_company_dashboard_stats(
 ) -> dict[str, Any]:
     """
     V9.0 机构画像：仅按 **当前 company_id** 聚合 `.executive_memory` 下该公司目录，绝不跨公司。
+    V10.0 新增 flywheel_metrics 子键（命中率、TOP 记忆、本月新增、权重分布）。
 
     返回结构稳定，无数据时为零值/空列表，供 UI 与 Plotly 安全消费。
     pre_loaded_pairs：调用方已加载的 (stem_tag, ExecutiveMemory) 列表，传入时跳过磁盘读取（减少双倍 IO）。
     """
+    _empty_flywheel: dict[str, Any] = {
+        "hit_rate": 0.0,
+        "top_memories": [],
+        "monthly_new": 0,
+        "weight_distribution": {"high": 0, "medium": 0, "low": 0},
+    }
     empty: dict[str, Any] = {
         "total_memories": 0,
         "active_executives": 0,
@@ -405,6 +470,7 @@ def get_company_dashboard_stats(
         },
         "total_hit_count": 0,
         "last_updated_at": "",
+        "flywheel_metrics": _empty_flywheel,
     }
     cid = (company_id or "").strip()
     if not cid or cid == "__new__":
@@ -463,4 +529,5 @@ def get_company_dashboard_stats(
         },
         "total_hit_count": total_hits,
         "last_updated_at": last_u,
+        "flywheel_metrics": _build_flywheel_metrics(pairs),
     }

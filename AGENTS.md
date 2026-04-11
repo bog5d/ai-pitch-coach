@@ -9,8 +9,8 @@
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
 | **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.6.5**），纯净包目录名随其变化。 |
-| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。**V9.6.x**：两阶段深评、ASR 润色、魔法精炼等见 README。**V9.6.2**：**工业级稳定性十修**（DashScope GET、时间戳、缓存润色、路径截断、截断可感知、错题幂等、Dashboard 单次聚合、冲突检测降噪等，见 `CHANGELOG.md`）。**V9.6.3**：**审查台双缺陷修复**（问题背景截断 40→100 字；专家视图空值安全回补）。**V9.6.4**：**ASR/落盘异常防护**。**V9.6.5**：**ASR热词UI升级+BUG-C自动填充保护**。**V10.0-Task1✅**：`MEMORY_ROOT`/`CACHE_ROOT` 环境变量，共享网盘多人协作。**V10.0-Task2✅**：`src/analytics_exporter.py`（新建），锁定时静默导出 `{stem}_analytics.json`（session_id、得分、风险分布、精炼次数等），为跨公司分析打基础；`_v3_finalize_stem` 末尾加1行调用，失败静默跳过。见 `docs/superpowers/plans/2026-04-11-v100-data-flywheel.md`（Task1✅ Task2✅ Task3⏳）。 |
-| **回归测试** | `pytest tests/` → 当前全量 **303 passed**（含 `test_v100_shared_memory` 14条、`test_v100_analytics` 18条等）。 |
+| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。**V9.6.x**：两阶段深评、ASR 润色、魔法精炼等见 README。**V9.6.2**：**工业级稳定性十修**（DashScope GET、时间戳、缓存润色、路径截断、截断可感知、错题幂等、Dashboard 单次聚合、冲突检测降噪等，见 `CHANGELOG.md`）。**V9.6.3**：**审查台双缺陷修复**（问题背景截断 40→100 字；专家视图空值安全回补）。**V9.6.4**：**ASR/落盘异常防护**。**V9.6.5**：**ASR热词UI升级+BUG-C自动填充保护**。**V10.0-Task1✅**：`MEMORY_ROOT`/`CACHE_ROOT` 环境变量，共享网盘多人协作。**V10.0-Task2✅**：`analytics_exporter.py`，锁定时静默导出 `{stem}_analytics.json`。**V10.0-Task3✅**：`memory_engine.get_company_dashboard_stats` 新增 `flywheel_metrics`（命中率/TOP贡献榜/本月新增/权重分布）；Dashboard 新增「⚡飞轮速度指数」视图（三指标卡 + TOP10 横向柱状图）。见 `docs/superpowers/plans/2026-04-11-v100-data-flywheel.md`（Task1✅ Task2✅ Task3✅）。 |
+| **回归测试** | `pytest tests/` → 当前全量 **318 passed**（含 `test_v100_shared_memory` 14条、`test_v100_analytics` 18条、`test_v100_flywheel_metrics` 15条等）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 
