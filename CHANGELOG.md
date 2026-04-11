@@ -4,6 +4,23 @@
 
 ---
 
+## [V9.6.4] — 2026-04-11 · ASR 落盘异常防护（稳定性红蓝对抗审计）
+
+稳定性审计发现两处无异常保护的崩溃路径，**266 passed**。
+
+### 修复（2 项）
+
+| # | 问题描述 | 根因 | 修复位置 |
+|---|---------|------|---------|
+| BUG-A | 阿里云转写结果 URL 返回 HTML 错误页时抛裸 `JSONDecodeError`，整条 ASR 流程崩溃 | `_fetch_json_from_url` 无任何 try/except | `src/transcriber.py:_fetch_json_from_url`：网络错误 + JSON 解析异常统一包装为 `RuntimeError`，含中文可读提示 |
+| BUG-B | 磁盘空间不足/权限不够时 `analysis_json` 写入失败，抛裸 `OSError`，可能留下损坏文件 | `job_pipeline.py:write_text` 无保护 | `src/job_pipeline.py`：写入包装 `try/except OSError → RuntimeError`，含路径和处理建议 |
+
+### 测试
+
+- `tests/test_bugfix_stability.py` 新增 `TestFetchJsonFromUrl`（3 cases）、`TestAnalysisJsonWriteProtection`（1 case）
+
+---
+
 ## [V9.6.3] — 2026-04-11 · 审查台双缺陷修复（同事测试反馈）
 
 针对 V9.6.2 同事测试发现的两个审查台体验问题精准修复，**262 passed**。

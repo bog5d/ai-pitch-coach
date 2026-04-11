@@ -1,7 +1,7 @@
 """
 一键生成「纯净交付」文件夹 + 交付级 ZIP（Green-Box Release）。
 运行：在项目根目录执行  python build_release.py
-发版版本以本文件内 CURRENT_VERSION 为准（当前 V9.6.3）；目录 / ZIP 名随其变化。
+发版版本以本文件内 CURRENT_VERSION 为准（当前 V9.6.4）；目录 / ZIP 名随其变化。
 先在系统临时目录下完整拼装再打包；若项目根下旧版交付目录被 debug.log 等占用无法删除，仍会生成 ZIP，并提示新文件夹的临时路径。
 若根目录存在 `.streamlit/`（如 `config.toml` 上调 `maxUploadSize`），会一并打入交付目录。
 
@@ -30,7 +30,7 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent
 
 # 发版时与主理人约定版本对齐；ZIP / 交付文件夹名均由此派生
-CURRENT_VERSION = "V9.6.3"
+CURRENT_VERSION = "V9.6.4"
 OUT_NAME = f"AI路演教练_纯净交付版_{CURRENT_VERSION}"
 OUT = ROOT / OUT_NAME
 
@@ -64,6 +64,7 @@ OPTIONAL_ROOT_FILES = [
     "V9.6.1_稳定性四连修版_说明.txt",
     "V9.6.2_工业级稳定性十修_说明.txt",
     "V9.6.3_审查台双缺陷修复版_说明.txt",
+    "V9.6.4_ASR落盘异常防护版_说明.txt",
     ".env.example",
 ]
 
