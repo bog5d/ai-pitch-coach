@@ -402,8 +402,18 @@ def _dashscope_upload_file(policy_data: dict[str, Any], file_path: str) -> str:
 
 
 def _fetch_json_from_url(url: str) -> dict[str, Any]:
-    raw = urllib_request.urlopen(url, timeout=120).read().decode("utf-8")
-    return json.loads(raw)
+    """下载阿里云转写结果 JSON；网络错误或非 JSON 响应统一包装为 RuntimeError。"""
+    try:
+        raw = urllib_request.urlopen(url, timeout=120).read().decode("utf-8")
+    except Exception as exc:
+        raise RuntimeError(f"阿里云结果下载失败（{type(exc).__name__}）：{exc}") from exc
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        preview = raw[:200].replace("\n", " ")
+        raise RuntimeError(
+            f"阿里云结果下载失败（返回非 JSON，可能是 HTTP 错误页）：{preview!r}"
+        ) from exc
 
 
 _SENTENCE_PUNCT_CHARS = frozenset("。？！，…")

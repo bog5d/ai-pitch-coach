@@ -451,3 +451,94 @@ class TestDetectLogicalConflictFpLimit:
         snipers = [{"quote": "test", "reason": "某指控"}]
         warnings = detect_logical_conflict("", json.dumps(snipers))
         assert warnings == []
+
+
+# ════════════════════════════════════════════════════════
+# T_BUGA  BUG-A: _fetch_json_from_url 应捕获网络/解析异常
+# ════════════════════════════════════════════════════════
+class TestFetchJsonFromUrl:
+    """阿里云结果 URL 下载时：非 JSON 响应 / 网络超时 → 抛出 RuntimeError 而非裸异常。"""
+
+    def test_html_error_page_raises_runtime_error(self):
+        """URL 返回 HTML 错误页时抛 RuntimeError，不裸露 JSONDecodeError。"""
+        import urllib.error
+        from unittest.mock import patch, MagicMock
+        from transcriber import _fetch_json_from_url
+
+        html_bytes = b"<html><body>403 Forbidden</body></html>"
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = html_bytes
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("transcriber.urllib_request.urlopen", return_value=mock_resp):
+            with pytest.raises(RuntimeError, match="阿里云结果下载失败"):
+                _fetch_json_from_url("https://fake.oss/result.json")
+
+    def test_network_error_raises_runtime_error(self):
+        """网络超时/连接失败 → RuntimeError，不裸露 URLError。"""
+        import urllib.error
+        from unittest.mock import patch
+        from transcriber import _fetch_json_from_url
+
+        with patch(
+            "transcriber.urllib_request.urlopen",
+            side_effect=urllib.error.URLError("timed out"),
+        ):
+            with pytest.raises(RuntimeError, match="阿里云结果下载失败"):
+                _fetch_json_from_url("https://fake.oss/result.json")
+
+    def test_valid_json_returns_dict(self):
+        """正常 JSON 响应应正确解析返回。"""
+        from unittest.mock import patch, MagicMock
+        from transcriber import _fetch_json_from_url
+
+        payload = {"transcripts": [{"words": []}]}
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(payload).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("transcriber.urllib_request.urlopen", return_value=mock_resp):
+            result = _fetch_json_from_url("https://fake.oss/result.json")
+        assert result == payload
+
+
+# ════════════════════════════════════════════════════════
+# T_BUGB  BUG-B: analysis_json 写入失败应有清晰错误
+# ════════════════════════════════════════════════════════
+class TestAnalysisJsonWriteProtection:
+    """落盘失败时给出可读错误，而不是裸 OSError/FileNotFoundError。"""
+
+    def test_write_failure_raises_runtime_error(self, tmp_path):
+        """磁盘写入异常 → RuntimeError，包含路径信息。"""
+        import sys
+        from pathlib import Path
+        from unittest.mock import patch, MagicMock
+
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        import job_pipeline
+
+        mock_params = MagicMock()
+        mock_params.analysis_json_path = tmp_path / "nonexistent_dir" / "report.json"
+        mock_params.skip_asr_polish = True
+        mock_params.hot_words = []
+        mock_params.html_export_options = {}
+
+        mock_words = []
+        mock_report = MagicMock()
+        mock_report.risk_points = []
+        mock_report.model_dump.return_value = {"risk_points": [], "total_score": 100}
+
+        with (
+            patch("job_pipeline.transcribe_audio", return_value=mock_words),
+            patch("job_pipeline.evaluate_pitch", return_value=mock_report),
+            patch("job_pipeline.apply_asr_original_text_override", return_value=mock_report),
+        ):
+            with pytest.raises((RuntimeError, OSError)):
+                job_pipeline.run_pitch_file_job(
+                    "fake_audio.mp3",
+                    mock_params,
+                    skip_html_export=True,
+                    cached_words=mock_words,
+                )

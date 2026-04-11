@@ -224,10 +224,16 @@ def run_pitch_file_job(
     report_for_disk.risk_points = [
         rp for rp in report_for_disk.risk_points if _is_valid_risk_point(rp)
     ]
-    params.analysis_json_path.write_text(
-        json.dumps(report_for_disk.model_dump(), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    try:
+        params.analysis_json_path.write_text(
+            json.dumps(report_for_disk.model_dump(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"分析报告写入失败（{params.analysis_json_path}）：{exc}。"
+            "请检查磁盘空间和目录写入权限。"
+        ) from exc
     if not skip_html_export:
         generate_html_report(
             audio_path,
