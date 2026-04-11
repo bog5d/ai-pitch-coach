@@ -161,9 +161,6 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
     )
 
     st.markdown("## 🛰️ 全景机构画像 · 数据指挥中心")
-    st.caption(
-        "仅展示**当前侧栏选中公司**的沉淀数据；与 V8.4 公司域字典一致，绝不跨公司混桶。"
-    )
     if not company_id or company_id == "__new__":
         st.warning("请先在侧栏选择具体公司档案（非「新建公司」状态）后再查看指挥中心。")
         return
@@ -428,8 +425,187 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
             else:
                 st.error("更新失败。")
 
+    # ── V10.1 个人成长中心 ──────────────────────────────────────────────────
+    _render_personal_growth_section(company_id, workspace_root, pairs)
+
     # ── V10.0 行业基准对比 ──────────────────────────────────────────────────
     _render_benchmark_section(workspace_root)
+
+
+def _render_personal_growth_section(
+    company_id: str,
+    workspace_root: str,
+    pairs: list,
+) -> None:
+    """V10.1：个人成长中心 = 成长曲线 + 弱点雷达图 + 今天练什么。"""
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from benchmark_engine import build_benchmark, scan_analytics_files
+    from growth_engine import (
+        build_growth_curve,
+        build_weakness_radar,
+        get_person_sessions,
+        get_practice_recommendations,
+    )
+
+    st.divider()
+    st.subheader("🧬 个人成长中心")
+
+    # ── 被访谈人选择器 ──────────────────────────────────────────────────────
+    all_tags = sorted({tag for tag, _ in pairs}) if pairs else []
+    if not all_tags:
+        st.info("暂无个人记录。完成至少一次「锁定导出」（被访谈人非空）后，个人成长数据将自动积累。")
+        return
+
+    selected_person = st.selectbox(
+        "选择被访谈人",
+        options=all_tags,
+        key=f"growth_person_{company_id}",
+    )
+
+    ws_path = Path((workspace_root or "").strip() or str(get_writable_app_root()))
+
+    with st.spinner("加载个人历史数据…"):
+        person_sessions = get_person_sessions(ws_path, company_id, selected_person)
+        curve = build_growth_curve(person_sessions)
+        all_analytics = scan_analytics_files(ws_path)
+        benchmark = build_benchmark(all_analytics)
+        radar = build_weakness_radar(person_sessions, benchmark)
+        recs = get_practice_recommendations(person_sessions, top_n=3)
+
+    n_sessions = len(person_sessions)
+    if n_sessions == 0:
+        st.info(
+            f"「{selected_person}」暂无 analytics 记录（需先锁定导出至少一场）。"
+            "已有的记忆数据仍会在下方明细中显示。"
+        )
+        return
+
+    # ── 成长曲线区块 ─────────────────────────────────────────────────────────
+    st.markdown("#### 📈 得分成长曲线")
+
+    # KPI 行
+    c1, c2, c3, c4 = st.columns(4)
+    trend_icon = {"上升": "⬆️", "下降": "⬇️", "平稳": "➡️", "首次": "🆕", "暂无数据": "—"}.get(
+        curve["trend"], ""
+    )
+    c1.metric("复盘场次", n_sessions)
+    c2.metric("最新得分", curve["scores"][-1] if curve["scores"] else "—")
+    delta_val = curve["score_delta"]
+    c3.metric(
+        "累计进步",
+        f"+{delta_val}" if delta_val > 0 else str(delta_val),
+        delta=f"{'+' if delta_val > 0 else ''}{delta_val}分",
+    )
+    c4.metric(f"趋势 {trend_icon}", curve["trend"])
+
+    # 折线图
+    if len(curve["scores"]) >= 2:
+        import re as _re
+
+        labels = []
+        for d in curve["dates"]:
+            m = _re.search(r"(\d{4})-(\d{2})-(\d{2})", d)
+            labels.append(f"{m.group(2)}/{m.group(3)}" if m else d[:10])
+
+        fig_line = go.Figure()
+        fig_line.add_trace(go.Scatter(
+            x=labels, y=curve["scores"],
+            mode="lines+markers+text",
+            text=[str(s) for s in curve["scores"]],
+            textposition="top center",
+            line=dict(color="#3b82f6", width=3),
+            marker=dict(size=10),
+            name="得分",
+        ))
+        # 行业均分参考线
+        bm_avg = benchmark.get("avg_score", 0)
+        if bm_avg:
+            fig_line.add_hline(
+                y=bm_avg,
+                line_dash="dash",
+                line_color="#f59e0b",
+                annotation_text=f"行业均分 {bm_avg:.1f}",
+                annotation_position="bottom right",
+            )
+        fig_line.update_layout(
+            height=280,
+            margin=dict(t=20, b=10),
+            yaxis=dict(range=[max(0, min(curve["scores"]) - 10), 105]),
+            xaxis_title="复盘场次",
+            yaxis_title="综合得分",
+        )
+        st.plotly_chart(fig_line, use_container_width=True)
+    else:
+        st.caption(f"当前仅有 {n_sessions} 场记录，2场以上才绘制曲线。")
+
+    # ── 弱点雷达图 ───────────────────────────────────────────────────────────
+    st.markdown("#### 🎯 能力雷达图 vs 行业基准")
+
+    dims = radar["dimensions"]
+    person_vals = radar["person_values"]
+    bm_vals = radar["benchmark_values"]
+
+    fig_radar = go.Figure()
+    fig_radar.add_trace(go.Scatterpolar(
+        r=person_vals + [person_vals[0]],
+        theta=dims + [dims[0]],
+        fill="toself",
+        name=selected_person,
+        line_color="#3b82f6",
+        fillcolor="rgba(59,130,246,0.2)",
+    ))
+    fig_radar.add_trace(go.Scatterpolar(
+        r=bm_vals + [bm_vals[0]],
+        theta=dims + [dims[0]],
+        fill="toself",
+        name="行业基准",
+        line_color="#f59e0b",
+        fillcolor="rgba(245,158,11,0.1)",
+        line_dash="dash",
+    ))
+    fig_radar.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=9)),
+        ),
+        showlegend=True,
+        height=380,
+        margin=dict(t=20, b=20),
+    )
+    st.plotly_chart(fig_radar, use_container_width=True)
+
+    # 雷达图维度说明（第一次看不懂就直接告诉他）
+    with st.expander("📐 维度说明（点开看怎么读这张图）"):
+        st.markdown(
+            "- **综合得分**：历次得分均值，越高越好\n"
+            "- **严重风险率**：越接近100说明严重错误越少（100 − 严重占比%）\n"
+            "- **一般风险率**：越接近100说明一般错误越少\n"
+            "- **AI纠错力**：你发现了多少AI漏掉的风险点，体现主动意识\n"
+            "- **精炼覆盖率**：你修改过多少AI初判（代表你在认真审查而非盲目接受）\n"
+            "- 蓝色区域=你，黄色虚线=行业均值；蓝色面积越大越好"
+        )
+
+    if radar["top_weakness_types"]:
+        st.caption(
+            f"⚡ 你的主要弱点维度：**{'、'.join(radar['top_weakness_types'])}** "
+            "（见下方「今天练什么」）"
+        )
+
+    # ── 今天要重点练什么 ─────────────────────────────────────────────────────
+    st.markdown("#### 🏋️ 今天要重点练什么")
+    st.caption(f"基于 {n_sessions} 场历史复盘 · 最近 3 场权重 ×4")
+
+    if not recs:
+        st.info("暂无足够数据生成练习建议，继续完成更多复盘后此处将自动更新。")
+    else:
+        for i, rec in enumerate(recs):
+            medal = ["🥇", "🥈", "🥉"][i] if i < 3 else f"#{i+1}"
+            with st.container():
+                col_l, col_r = st.columns([1, 4])
+                col_l.markdown(f"### {medal}")
+                with col_r:
+                    st.markdown(f"**{rec['risk_type']}**　*（历史加权出现 {rec['count']} 次）*")
+                    st.info(rec["suggestion"])
 
 
 def _render_benchmark_section(workspace_root: str) -> None:
@@ -1387,16 +1563,36 @@ def main() -> None:
 
     with st.sidebar:
         # ── V8.4 公司档案选择器 ─────────────────────────────────────────────────
-        st.markdown("### 🏢 公司档案")
+        st.markdown("### 🏢 项目档案")
 
         companies = cp.list_companies()
-        company_options = {c.company_id: c.display_name for c in companies}
-        company_options["__new__"] = "➕ 新建公司"
+        # 以 display_name 去重：同名公司只保留第一条，避免重复条目堆积
+        _seen_names: set[str] = set()
+        unique_companies = []
+        for _c in companies:
+            if _c.display_name not in _seen_names:
+                _seen_names.add(_c.display_name)
+                unique_companies.append(_c)
+        companies = unique_companies
+
+        company_options: dict[str, str] = {c.company_id: c.display_name for c in companies}
+        company_options["__new__"] = "➕ 新建项目"
+
+        # 默认选中上次使用的公司；若无记录则选第一个已有公司（而非"新建"）
+        _all_opts = list(company_options.keys())
+        _saved_id = st.session_state.get("_active_company_id")
+        if _saved_id and _saved_id in _all_opts:
+            _default_idx = _all_opts.index(_saved_id)
+        elif len(companies) > 0:
+            _default_idx = 0  # 第一个已有项目
+        else:
+            _default_idx = 0  # 只有"新建"
 
         selected_company_id = st.selectbox(
-            "选择公司",
-            options=list(company_options.keys()),
+            "选择项目",
+            options=_all_opts,
             format_func=lambda k: company_options[k],
+            index=_default_idx,
             key="company_selector",
             label_visibility="collapsed",
         )
@@ -1406,23 +1602,39 @@ def main() -> None:
             st.session_state["current_company_cache"] = {}
             st.session_state["_active_company_id"] = selected_company_id
 
-        # 新建公司
+        # 新建项目
         if selected_company_id == "__new__":
-            with st.expander("📝 填写新公司信息", expanded=True):
-                new_display = st.text_input("公司名称", key="new_co_display")
-                new_bg = st.text_area("公司背景（可选）", key="new_co_bg", height=100)
+            with st.expander("📝 填写项目信息", expanded=True):
+                st.caption(
+                    "💡 **建议用项目简称**（如「泽天智航」），同项目下不同子公司/被访人"
+                    "只需切换「被访谈人」字段，无需分别建档。"
+                )
+                new_display = st.text_input("项目名称（简称）", key="new_co_display")
+                new_bg = st.text_area("项目背景（可选）", key="new_co_bg", height=100)
                 if st.button("💾 创建并选中", key="btn_create_co"):
                     if new_display.strip():
-                        import re as _re, time as _time
-                        new_id = _re.sub(r"[^\w]", "_", new_display.strip().lower()) + f"_{int(_time.time())}"
-                        cp.save_company(CompanyProfile(
-                            company_id=new_id,
-                            display_name=new_display.strip(),
-                            background=new_bg.strip(),
-                        ))
-                        st.rerun()
+                        import re as _re
+                        # 同名复用：避免重复创建相同项目
+                        _existing = next(
+                            (c for c in cp.list_companies() if c.display_name == new_display.strip()),
+                            None,
+                        )
+                        if _existing:
+                            st.session_state["_active_company_id"] = _existing.company_id
+                            st.info(f"「{new_display.strip()}」已存在，已自动切换到该项目。")
+                            st.rerun()
+                        else:
+                            import time as _time
+                            new_id = _re.sub(r"[^\w]", "_", new_display.strip()) + f"_{int(_time.time())}"
+                            cp.save_company(CompanyProfile(
+                                company_id=new_id,
+                                display_name=new_display.strip(),
+                                background=new_bg.strip(),
+                            ))
+                            st.session_state["_active_company_id"] = new_id
+                            st.rerun()
                     else:
-                        st.warning("请输入公司名称")
+                        st.warning("请输入项目名称")
             current_company_bg = ""
             current_sniper_json = "[]"
         else:

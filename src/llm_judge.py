@@ -575,6 +575,7 @@ def _build_system_prompt(
 - 字段 is_manual_entry 仅允许为 false。
 - 字段 needs_refinement 仅允许为 false。
 - 字段 refinement_note 仅允许为空字符串 ""。
+- 字段 risk_type：必填，1-8 字短标签，概括该风险点的核心类型，如：估值回避、数据含糊、逻辑断裂、口径偏离、主动防御不足、竞品回避、案例缺失、表达模糊 等；禁止写空字符串。
 - 【极度重要】：输出 start_word_index 和 end_word_index 时切忌只圈出错片段的几个词；必须向外扩展索引边界，包含投资人完整提问与创始人完整回答段落，使切割音频能呈现完整交锋语境。（**例外**：因 <TASK> 第 3 条「🎯 定向核实」单独提取的 RiskPoint 必须遵守该条中的**字面量锚定**与**约 60 秒内、单回合**纪律，禁止套用本条无边界扩展。）
 
 必须严格按照 JSON Schema 输出，start/end index 必须精确。

@@ -34,6 +34,7 @@ def _make_report(
         risk_points = [
             RiskPoint(
                 risk_level="严重",
+                risk_type="数据矛盾",
                 tier1_general_critique="营收预测与财务口径存在分歧。后续说明。",
                 tier2_qa_alignment="与 QA 第 3 条偏离",
                 improvement_suggestion="建议统一口径",
@@ -44,6 +45,7 @@ def _make_report(
             ),
             RiskPoint(
                 risk_level="一般",
+                risk_type="估值回避",
                 tier1_general_critique="估值追问时有回避倾向。",
                 tier2_qa_alignment="",
                 improvement_suggestion="直接给出区间估值",
@@ -56,6 +58,7 @@ def _make_report(
             ),
             RiskPoint(
                 risk_level="轻微",
+                risk_type="表达模糊",
                 tier1_general_critique="供应链话语权描述略显模糊。",
                 tier2_qa_alignment="",
                 improvement_suggestion="补充具体客户名",

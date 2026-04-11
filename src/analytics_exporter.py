@@ -68,6 +68,17 @@ def _build_risk_breakdown(report: AnalysisReport) -> dict:
     return breakdown
 
 
+def _build_risk_type_counts(report: AnalysisReport) -> dict[str, int]:
+    """统计每种 risk_type 出现次数，供个人成长引擎分析弱点维度。"""
+    from collections import Counter
+    counts: Counter[str] = Counter()
+    for rp in report.risk_points:
+        rt = (rp.risk_type or "").strip()
+        if rt:
+            counts[rt] += 1
+    return dict(counts)
+
+
 def _is_stage1_truncated(report: AnalysisReport) -> bool:
     """判断报告是否经历过阶段一 JSON 截断（检查 deduction_reason 中的截断标记）。"""
     reason = (report.total_score_deduction_reason or "").lower()
@@ -116,6 +127,7 @@ def export_analytics(
                 1 for rp in report.risk_points if rp.is_manual_entry
             ),
             "stage1_truncated": _is_stage1_truncated(report),
+            "risk_type_counts": _build_risk_type_counts(report),  # V10.1 成长引擎
         }
 
         serialized = json.dumps(payload, ensure_ascii=False, indent=2)

@@ -85,6 +85,13 @@ class RiskPoint(BaseModel):
         default="",
         description="主理人给精炼 LLM 的批示意见；LLM 输出时必须为空字符串",
     )
+    risk_type: str = Field(
+        default="",
+        description=(
+            "风险类型短标签，1-8字，如：估值回避、数据含糊、逻辑断裂、口径偏离、竞品回避等。"
+            "LLM 必须填写，供个人成长引擎分析弱点维度。"
+        ),
+    )
 
 
 class AnalysisReport(BaseModel):
