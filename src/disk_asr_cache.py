@@ -14,12 +14,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from runtime_paths import get_writable_app_root
+from runtime_paths import get_writable_app_root, get_asr_cache_root
 
 
 def get_default_cache_dir() -> Path:
-    """返回默认磁盘缓存目录（writable_app_root/.asr_cache）。"""
-    return get_writable_app_root() / ".asr_cache"
+    """
+    ASR 磁盘缓存目录（V10.0 升级）。
+
+    优先读取 CACHE_ROOT 环境变量（共享网盘多人协作场景）；
+    未设置时为可写根下的 `.asr_cache` 目录，行为与 V9.x 完全一致。
+    """
+    return get_asr_cache_root()
 
 
 def load_asr_cache(

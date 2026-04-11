@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from runtime_paths import get_writable_app_root
+from runtime_paths import get_writable_app_root, get_memory_root
 from schema import ExecutiveMemory
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,13 @@ def _iso_now_utc_z() -> str:
 
 
 def default_store_dir() -> Path:
-    """默认可写根下的 `.executive_memory` 目录。"""
-    return get_writable_app_root() / EXECUTIVE_MEMORY_SUBDIR
+    """
+    记忆库根目录（V10.0 升级）。
+
+    优先读取 MEMORY_ROOT 环境变量（共享网盘多人协作场景）；
+    未设置时为可写根下的 `.executive_memory` 目录，行为与 V9.x 完全一致。
+    """
+    return get_memory_root()
 
 
 def _safe_fs_segment(name: str) -> str:

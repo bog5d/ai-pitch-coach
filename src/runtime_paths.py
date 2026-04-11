@@ -39,3 +39,38 @@ def get_resource_path(relative_path: str) -> str:
     if not rel or rel == ".":
         return str(root)
     return str(root / rel)
+
+
+def get_memory_root() -> Path:
+    """
+    记忆库根目录（V10.0 新增）。
+
+    优先读取 MEMORY_ROOT 环境变量，支持同事将 .executive_memory 挂载到
+    共享网盘（如 OneDrive、坚果云、企业NAS），实现零代码改动的多人协作。
+
+    未设置或为空时，回退到 get_writable_app_root() / '.executive_memory'，
+    行为与 V9.x 完全一致（零回归风险）。
+
+    用法（.env 文件）：
+        MEMORY_ROOT=Z:\\team_share\\executive_memory
+    """
+    override = os.environ.get("MEMORY_ROOT", "").strip()
+    if override:
+        return Path(override)
+    return get_writable_app_root() / ".executive_memory"
+
+
+def get_asr_cache_root() -> Path:
+    """
+    ASR 磁盘缓存根目录（V10.0 新增）。
+
+    优先读取 CACHE_ROOT 环境变量，支持共享 ASR 缓存以避免重复转写费用。
+    未设置或为空时，回退到 get_writable_app_root() / '.asr_cache'。
+
+    用法（.env 文件）：
+        CACHE_ROOT=Z:\\team_share\\asr_cache
+    """
+    override = os.environ.get("CACHE_ROOT", "").strip()
+    if override:
+        return Path(override)
+    return get_writable_app_root() / ".asr_cache"

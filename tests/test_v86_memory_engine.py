@@ -184,6 +184,8 @@ class TestLoadSaveRoundtrip:
 
 class TestDefaultStoreDir:
     def test_default_store_dir_under_writable_root(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("memory_engine.get_writable_app_root", lambda: tmp_path)
+        # V10.0：default_store_dir() 现在通过 get_memory_root() 中转，
+        # mock 目标从 get_writable_app_root 改为 get_memory_root
+        monkeypatch.setattr("memory_engine.get_memory_root", lambda: tmp_path / ".executive_memory")
         d = default_store_dir()
         assert d == tmp_path / ".executive_memory"
