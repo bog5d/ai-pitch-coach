@@ -53,7 +53,7 @@ from openai import APIError, OpenAI
 
 load_dotenv(_ENV_PATH)
 
-from audio_filename_hints import guess_batch_fields_from_stem, stem_from_audio_filename
+from audio_filename_hints import guess_batch_fields_from_stem, should_autofill_iv, stem_from_audio_filename
 from audio_preprocess import smart_compress_media
 from document_reader import extract_text_from_files
 from job_pipeline import (
@@ -1606,6 +1606,29 @@ def main() -> None:
 
     batch_qa_files_per_index: list[list] = []
     if uploaded_list:
+        # ── 转写质量设置（全局，作用于所有录音）──
+        with st.expander("🔥 转写质量设置（专有名词热词）", expanded=False):
+            if "v80_hot_words_raw" not in st.session_state:
+                st.session_state["v80_hot_words_raw"] = ""
+            st.text_area(
+                "项目专属专有名词（用逗号隔开，注入 ASR 提示词）",
+                key="v80_hot_words_raw",
+                height=72,
+                placeholder="例如：净利润、迪策资本、EBITDA、核心增长率、信号处理链路",
+                help=(
+                    "输入本项目的专业术语、机构名称、人名等，系统将在转写时注入 ASR 引擎作为提示词，"
+                    "从源头提升财务、业务专有名词的识别准确率。用逗号（中英文均可）分隔多个词。"
+                ),
+            )
+            n_words = len([
+                w for w in (st.session_state.get("v80_hot_words_raw") or "")
+                .replace("，", ",").replace("；", ",").split(",") if w.strip()
+            ])
+            if n_words:
+                st.caption(f"已录入 {n_words} 个热词，转写时将作为 ASR 提示词注入。")
+            else:
+                st.caption("未录入热词。对于含大量专业术语的录音，建议填写后再转写。")
+
         st.subheader("逐录音填写（进入 AI 上下文）")
         st.checkbox(
             "根据录音文件名自动填写被访谈人与狙击表首行疑点",
@@ -1622,6 +1645,7 @@ def main() -> None:
         for idx, uf in enumerate(uploaded_list):
             stem = stem_from_audio_filename(uf.name)
             track_key = f"_batch_audio_stem_{idx}"
+            autofill_store_key = f"_batch_iv_autofilled_{idx}"  # BUG-C：记录上次自动填充值
             init_key = f"batch_sniper_init_{idx}"   # 初始数据专用，写操作唯一入口
             ed_key = f"batch_sniper_editor_{idx}"   # 仅绑定 data_editor widget，严禁写入
             if init_key not in st.session_state:
@@ -1635,7 +1659,12 @@ def main() -> None:
                 if st.session_state.get(track_key) != stem:
                     st.session_state[track_key] = stem
                     iv_guess, note_guess = guess_batch_fields_from_stem(stem)
-                    st.session_state[f"batch_iv_{idx}"] = iv_guess
+                    # BUG-C 修复：只有用户未手动改过才覆盖（保护手动输入）
+                    current_iv = st.session_state.get(f"batch_iv_{idx}", "")
+                    last_autofilled = st.session_state.get(autofill_store_key)
+                    if should_autofill_iv(current_iv, last_autofilled):
+                        st.session_state[f"batch_iv_{idx}"] = iv_guess
+                    st.session_state[autofill_store_key] = iv_guess  # 总是记录本次猜测
                     st.session_state[init_key] = pd.DataFrame(
                         [{"原文引用": "", "找茬疑点": note_guess}]
                     )
@@ -1683,19 +1712,6 @@ def main() -> None:
 
     st.info(
         "💡 **建议**：尽量为每条录音上传 **对应该方向的 QA** 或口径材料；未上传时仍会生成报告。"
-    )
-
-    # ── V8.0 模块一：项目专属热词库 ──
-    if "v80_hot_words_raw" not in st.session_state:
-        st.session_state["v80_hot_words_raw"] = ""
-    st.text_input(
-        "🔥 项目专属专有名词（用逗号隔开）",
-        key="v80_hot_words_raw",
-        placeholder="例如：净利润、迪策资本、EBITDA、核心增长率",
-        help=(
-            "输入本项目的专业术语、机构名称、人名等，系统将在转写时注入 ASR 引擎作为提示词，"
-            "从源头提升财务、业务专有名词的识别准确率。用逗号（中英文均可）分隔多个词。"
-        ),
     )
 
     if "v71_plain_body" not in st.session_state:

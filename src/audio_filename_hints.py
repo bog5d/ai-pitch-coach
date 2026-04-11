@@ -44,3 +44,20 @@ def guess_batch_fields_from_stem(stem: str) -> tuple[str, str]:
 def stem_from_audio_filename(filename: str) -> str:
     """从完整文件名得到主文件名（无扩展名）。"""
     return Path(filename or "").stem
+
+
+def should_autofill_iv(current_iv: str, last_autofilled: str | None) -> bool:
+    """
+    判断是否应将自动猜测值写入「被访谈人」字段（BUG-C 保护逻辑）。
+
+    规则：
+    - 字段为空 → 总是填（首次）
+    - last_autofilled 为 None 且字段非空 → 用户全手动填写，不覆盖
+    - 当前值等于上次自动填充的值 → 用户未改动，允许用新猜测覆盖
+    - 当前值不等于上次自动填充的值 → 用户手动修改过，保护，不覆盖
+    """
+    if not current_iv:
+        return True
+    if last_autofilled is None:
+        return False
+    return current_iv == last_autofilled

@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from audio_filename_hints import (  # noqa: E402
     guess_batch_fields_from_stem,
+    should_autofill_iv,
     stem_from_audio_filename,
 )
 
@@ -50,6 +51,34 @@ def test_stem_from_audio_filename() -> None:
 def test_empty_stem() -> None:
     assert guess_batch_fields_from_stem("") == ("", "")
     assert guess_batch_fields_from_stem("   ") == ("", "")
+
+
+# ── BUG-C：自动填充保护逻辑 ──
+
+def test_autofill_empty_field_always_fills() -> None:
+    """字段为空时，不管历史如何，都应自动填充。"""
+    assert should_autofill_iv("", None) is True
+    assert should_autofill_iv("", "赵治鹏") is True
+
+
+def test_autofill_first_time_fills() -> None:
+    """从未自动填充过（last_autofilled=None），有值的字段也应填充（首次触发）。"""
+    assert should_autofill_iv("", None) is True
+
+
+def test_autofill_user_unchanged_fills() -> None:
+    """用户没改过（当前值等于上次自动填充），应允许覆盖新猜测。"""
+    assert should_autofill_iv("赵治鹏", "赵治鹏") is True
+
+
+def test_autofill_user_changed_protects() -> None:
+    """用户手动改过（当前值不等于上次自动填充），不覆盖。"""
+    assert should_autofill_iv("李总", "赵治鹏") is False
+
+
+def test_autofill_manual_non_empty_no_history_protects() -> None:
+    """有值且没有上次自动填充记录：说明用户全手动填写，不覆盖。"""
+    assert should_autofill_iv("手动填的名字", None) is False
 
 
 if __name__ == "__main__":
