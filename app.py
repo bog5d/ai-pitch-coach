@@ -86,18 +86,18 @@ _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 def _extract_tier1_summary(tier1: str) -> str:
     """
     提取 tier1_general_critique 的首句作为「问题背景」摘要。
-    优先找第一个中文句末标点（。；！？）且位置 ≤40，回退到前 40 字 + 省略号。
+    优先找第一个中文句末标点（。；！？）且位置 ≤100，回退到前 100 字 + 省略号。
     """
     text = (tier1 or "").strip()
     if not text:
         return ""
     for sep in ["。", "；", "！", "？"]:
         idx = text.find(sep)
-        if 0 < idx <= 40:
+        if 0 < idx <= 100:
             return text[: idx + 1]
-    if len(text) <= 40:
+    if len(text) <= 100:
         return text
-    return text[:40] + "…"
+    return text[:100] + "…"
 
 
 def _v86_risk_point_harvest_blob(rp: dict) -> str:
@@ -500,16 +500,27 @@ def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
         # ── 正常初始化（仅当 key 尚未被 widget 托管时赋初值）──
         if f"{base}_lvl" not in st.session_state:
             st.session_state[f"{base}_lvl"] = rp.get("risk_level", "一般")
-        if f"{base}_t1" not in st.session_state:
-            st.session_state[f"{base}_t1"] = rp.get("tier1_general_critique", "")
-        if f"{base}_t2" not in st.session_state:
-            st.session_state[f"{base}_t2"] = rp.get("tier2_qa_alignment", "")
         if f"{base}_im" not in st.session_state:
             st.session_state[f"{base}_im"] = rp.get("improvement_suggestion", "")
-        if f"{base}_ded" not in st.session_state:
-            st.session_state[f"{base}_ded"] = rp.get("deduction_reason", "")
         if f"{base}_ort" not in st.session_state:
             st.session_state[f"{base}_ort"] = rp.get("original_text", "")
+
+        # 专家视图字段（_t1/_t2/_ded）：除首次初始化外，当值为空但原始数据非空且 toggle 尚未打开时
+        # 同样回补，防止精炼操作写入 "" 或旧草稿空字段导致专家视图白屏
+        # 安全边界：toggle=True 时 widget 托管 key，此时严禁写入
+        _expert_open = bool(st.session_state.get(f"{base}_expert_view", False))
+        for _suffix, _field in (
+            ("_t1", "tier1_general_critique"),
+            ("_t2", "tier2_qa_alignment"),
+            ("_ded", "deduction_reason"),
+        ):
+            _key = f"{base}{_suffix}"
+            _src = rp.get(_field, "")
+            if _key not in st.session_state:
+                st.session_state[_key] = _src
+            elif not st.session_state[_key] and _src and not _expert_open:
+                # session_state 为空但原始数据有内容，且 widget 未激活 → 安全回补
+                st.session_state[_key] = _src
         # V8.0 新增：精炼标记与批示
         if f"{base}_needs_refine" not in st.session_state:
             st.session_state[f"{base}_needs_refine"] = bool(rp.get("needs_refinement", False))
@@ -699,7 +710,9 @@ def _v3_render_single_stem_review(stem: str) -> None:
             )
 
             # 问题背景：取 tier1 首句（读 session_state，回退到 draft dict）
-            tier1_raw = st.session_state.get(f"v3rp_{stem}_{rid}_t1") or rp.get("tier1_general_critique", "")
+            # 用 or 兜底：session_state[_t1] 为 "" 时仍能读到原始 rp 的数据
+            _t1_key = f"v3rp_{stem}_{rid}_t1"
+            tier1_raw = st.session_state.get(_t1_key) or rp.get("tier1_general_critique", "")
             summary = _extract_tier1_summary(tier1_raw)
             if summary:
                 st.markdown(f"**问题背景**：{summary}")
