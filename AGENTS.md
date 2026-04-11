@@ -9,8 +9,8 @@
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
 | **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.6.5**），纯净包目录名随其变化。 |
-| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。**V9.6.x**：两阶段深评、ASR 润色、魔法精炼等见 README。**V9.6.2**：**工业级稳定性十修**（DashScope GET、时间戳、缓存润色、路径截断、截断可感知、错题幂等、Dashboard 单次聚合、冲突检测降噪等，见 `CHANGELOG.md`）。**V9.6.3**：**审查台双缺陷修复**（问题背景截断 40→100 字；专家视图空值安全回补）。**V9.6.4**：**ASR/落盘异常防护**。**V9.6.5**：**ASR热词UI升级+BUG-C自动填充保护**。**V10.0-Task1（进行中）**：`runtime_paths.py` 新增 `get_memory_root()` / `get_asr_cache_root()`，支持 `MEMORY_ROOT` / `CACHE_ROOT` 环境变量，同事通过共享网盘零代码实现多人协作；见 `docs/superpowers/plans/2026-04-11-v100-data-flywheel.md`（Task1✅ Task2⏳ Task3⏳）。 |
-| **回归测试** | `pytest tests/` → 当前全量 **285 passed**（含 `test_v100_shared_memory` 14条、`test_bugfix_stability`、`test_v90_*`、`test_v96_*` 等）。 |
+| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。**V9.6.x**：两阶段深评、ASR 润色、魔法精炼等见 README。**V9.6.2**：**工业级稳定性十修**（DashScope GET、时间戳、缓存润色、路径截断、截断可感知、错题幂等、Dashboard 单次聚合、冲突检测降噪等，见 `CHANGELOG.md`）。**V9.6.3**：**审查台双缺陷修复**（问题背景截断 40→100 字；专家视图空值安全回补）。**V9.6.4**：**ASR/落盘异常防护**。**V9.6.5**：**ASR热词UI升级+BUG-C自动填充保护**。**V10.0-Task1✅**：`MEMORY_ROOT`/`CACHE_ROOT` 环境变量，共享网盘多人协作。**V10.0-Task2✅**：`src/analytics_exporter.py`（新建），锁定时静默导出 `{stem}_analytics.json`（session_id、得分、风险分布、精炼次数等），为跨公司分析打基础；`_v3_finalize_stem` 末尾加1行调用，失败静默跳过。见 `docs/superpowers/plans/2026-04-11-v100-data-flywheel.md`（Task1✅ Task2✅ Task3⏳）。 |
+| **回归测试** | `pytest tests/` → 当前全量 **303 passed**（含 `test_v100_shared_memory` 14条、`test_v100_analytics` 18条等）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 
@@ -45,7 +45,8 @@
 | HTML 报告与切片 | `src/report_builder.py` | `apply_asr_original_text_override`；180s 窗口等 |
 | 数据契约 | `src/schema.py` | 含 **`needs_refinement`**、**`refinement_note`**、**`ExecutiveMemory`**（V8.6）；改字段需六向联动 |
 | 大文件音频 | `src/audio_preprocess.py` | ≥10MB 网关 |
-| 路径与可写根 | `src/runtime_paths.py` | `.env`、`debug.log`、Workspace、**.asr_cache** / **.executive_memory** 父目录 |；**V10.0** 新增 get_memory_root()（读 MEMORY_ROOT 环境变量）/ get_asr_cache_root()（读 CACHE_ROOT） |
+| 路径与可写根 | src/runtime_paths.py | .env、debug.log、Workspace；**V10.0** 新增 get_memory_root()（读 MEMORY_ROOT）/ get_asr_cache_root()（读 CACHE_ROOT） |
+| **Analytics 导出** | src/analytics_exporter.py | **V10.0 新模块**；export_analytics(report, ctx) 锁定时静默生成 {stem}_analytics.json；失败返回 None 不抛异常；在 pp.py::_v3_finalize_stem 末尾调用 |
 
 ---
 

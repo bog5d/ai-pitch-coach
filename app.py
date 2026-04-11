@@ -79,6 +79,7 @@ from report_builder import (
     snippet_audio_mp3_bytes,
 )
 from schema import AnalysisReport, RiskPoint, TranscriptionWord
+from analytics_exporter import export_analytics
 
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
@@ -649,6 +650,8 @@ def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     final = html_path.resolve()
     st.session_state[f"v46_preview_html_{stem}"] = str(final)
     harvest_n = _v86_harvest_finalize_if_needed(stem, payload)
+    # V10.0：静默导出 analytics JSON（失败不影响主流程）
+    export_analytics(report_for_disk, ctx)
     return final, harvest_n
 
 
