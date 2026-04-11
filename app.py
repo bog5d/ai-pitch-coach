@@ -80,6 +80,7 @@ from report_builder import (
 )
 from schema import AnalysisReport, RiskPoint, TranscriptionWord
 from analytics_exporter import export_analytics
+from benchmark_engine import build_benchmark, scan_analytics_files
 
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
@@ -149,8 +150,9 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> int:
     return harvested
 
 
-def _v86_render_executive_dashboard(company_id: str) -> None:
-    """V9.0 全景机构画像：KPI + Plotly + 下钻表 + 删除/调权重（严格按当前 company_id 聚合）。"""
+def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -> None:
+    """V9.0 全景机构画像：KPI + Plotly + 下钻表 + 删除/调权重（严格按当前 company_id 聚合）。
+    V10.0 新增：底部「行业基准对比」区块（workspace_root 传入时自动扫描 analytics JSON 聚合）。"""
     from memory_engine import (
         delete_executive_memory_by_uuid,
         get_company_dashboard_stats,
@@ -425,6 +427,86 @@ def _v86_render_executive_dashboard(company_id: str) -> None:
                 st.rerun()
             else:
                 st.error("更新失败。")
+
+    # ── V10.0 行业基准对比 ──────────────────────────────────────────────────
+    _render_benchmark_section(workspace_root)
+
+
+def _render_benchmark_section(workspace_root: str) -> None:
+    """V10.0：扫描 workspace 下所有 *_analytics.json，生成匿名行业基准对比看板。"""
+    import plotly.express as px
+
+    st.divider()
+    st.subheader("📊 行业基准对比（全部公司匿名聚合）")
+
+    ws_path = Path((workspace_root or "").strip() or str(get_writable_app_root()))
+    with st.spinner("扫描历史 analytics 数据…"):
+        analytics_list = scan_analytics_files(ws_path)
+        bm = build_benchmark(analytics_list)
+
+    n = bm["total_sessions"]
+    if n == 0:
+        st.info("暂无 analytics 数据。完成至少一次「锁定导出」后，行业基准数据将自动积累。")
+        return
+
+    # ── KPI 卡片 ────────────────────────────────────────────────────────────
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("总分析场次", n)
+    k2.metric("覆盖公司数", bm["total_companies"])
+    k3.metric("行业平均分", f"{bm['avg_score']:.1f}")
+    k4.metric("精炼覆盖率", f"{bm['refinement_rate']*100:.1f}%")
+
+    # ── 得分分布图 ───────────────────────────────────────────────────────────
+    st.caption("▸ 得分档位分布")
+    dist_df_data = {
+        "档位": [d["range"] for d in bm["score_distribution"]],
+        "场次数": [d["count"] for d in bm["score_distribution"]],
+    }
+    fig_dist = px.bar(
+        dist_df_data,
+        x="档位",
+        y="场次数",
+        color="档位",
+        color_discrete_map={
+            "0-59": "#ef4444",
+            "60-74": "#f59e0b",
+            "75-89": "#3b82f6",
+            "90-100": "#22c55e",
+        },
+        title="📈 综合得分档位分布（全公司匿名）",
+    )
+    fig_dist.update_layout(showlegend=False, height=280, margin=dict(t=40, b=10))
+    st.plotly_chart(fig_dist, use_container_width=True)
+
+    # ── 风险类型频率 ─────────────────────────────────────────────────────────
+    rf = bm["risk_type_frequency"]
+    total_risks = sum(rf.values()) or 1
+    st.caption("▸ 风险点级别分布（占所有风险点总数的百分比）")
+    rc1, rc2, rc3 = st.columns(3)
+    rc1.metric(
+        "🔴 严重",
+        rf["严重"],
+        delta=f"{rf['严重']/total_risks*100:.1f}%",
+        delta_color="inverse",
+    )
+    rc2.metric(
+        "🟡 一般",
+        rf["一般"],
+        delta=f"{rf['一般']/total_risks*100:.1f}%",
+        delta_color="off",
+    )
+    rc3.metric(
+        "🟢 轻微",
+        rf["轻微"],
+        delta=f"{rf['轻微']/total_risks*100:.1f}%",
+        delta_color="normal",
+    )
+
+    if bm["truncation_rate"] > 0:
+        st.caption(
+            f"⚠️ 截断率 {bm['truncation_rate']*100:.1f}%（阶段一分析被截断场次占比，超过 10% 建议检查 Prompt 长度）"
+        )
+    # ── END 行业基准对比 ─────────────────────────────────────────────────────
 
 
 def _preflight_subprocess_kwargs() -> dict:
@@ -1587,7 +1669,7 @@ def main() -> None:
         if st.button("⬅️ 返回主控制台", key="btn_v86_close_dash"):
             st.session_state["v86_dashboard_mode"] = False
             st.rerun()
-        _v86_render_executive_dashboard(selected_company_id)
+        _v86_render_executive_dashboard(selected_company_id, workspace_root=workspace)
         st.stop()
 
     if not st.session_state.get("env_all_ok", False):

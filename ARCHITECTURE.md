@@ -1,4 +1,4 @@
-# AI 路演教练 — 架构与数据流（V3.1 … V9.6.1）
+# AI 路演教练 — 架构与数据流（V3.1 … V10.0）
 
 本文档供后续开发者与 AI 接管时快速建立心智模型：**模块职责、数据流、人机协同与商业级防护**。
 
@@ -97,11 +97,11 @@
 
 - `pytest tests/`：含 `job_pipeline`、`extreme_cases`、`garbage_collector`、`test_v72_backend_override`（V7.2 覆写毒药/越界压测）、**`test_v75_formatter`**（按说话人分段 / 无 `[0]` 式导出）、**`test_v75_json_salvage`**（截断 JSON 抢救）、**`test_v76_asr_cache`**（V7.6 缓存命中 / 跳过 ASR / 落盘一致性，9 case）等。
 - 转写/LLM 集成测试以 mock 为主，避免外网依赖。
-- 全量回归：**74 passed**（截至 V8.0，以 `pytest tests/` 为准）。
+- 全量回归：**262 passed**（当前主干，以 `pytest tests/` 为准；Mock 外部 API）。
 
 ---
 
-*文档版本：V8.0 · 与 app.py / `job_pipeline` 当前行为对齐。*
+*文档版本：V9.6.2 · 与 app.py / `job_pipeline` 当前行为对齐。*
 
 ---
 
@@ -155,9 +155,57 @@
 | 防噪 | `memory_diff_noise_gate_passes`：相对 Levenshtein **>10%** 或 **\|Δ字数\|>10** 才调用提炼 LLM |
 | 提炼 | `llm_judge.distill_executive_memory_from_diff` → **DeepSeek**（`DEEPSEEK_API_KEY`）；失败捕获，静默跳过 |
 | 注入 | `job_pipeline`：`load_top` → **`record_executive_memory_prompt_hits`**（磁盘 `hit_count`+`updated_at`）→ `evaluate_pitch`；**`_format_historical_profile_block`** 内再次 **weight 降序截断 5 条** |
-| 看板 | **V9.0** **`get_company_dashboard_stats(company_id)`** 仅聚合该公司目录；UI **Plotly**（`plotly.express`）+ 下钻筛选；`delete` / `update_executive_memory_weight` 保留；**禁止** `data_editor` 反向写 `session_state`（铁律三） |
+| 看板 | **V9.0** **`get_company_dashboard_stats(company_id)`** 仅聚合该公司目录；UI **Plotly**（`plotly.express`）+ 下钻筛选；**V9.6.2** 支持 **`pre_loaded_pairs`**，与 `list_all_executive_memories_for_company` 结果复用以减少重复读盘；`delete` / `update_executive_memory_weight` 保留；**禁止** `data_editor` 反向写 `session_state`（铁律三） |
 
 **接手调试清单**：收割未触发 → 查 `v3_ctx.company_id`、**非「未指定」** 访谈人、`v3_initial_report_{stem}`；提炼不落盘 → 查 **`DEEPSEEK_API_KEY`** 与 `debug.log`；命中不增 → 查 `record_executive_memory_prompt_hits` 与 tag 桶路径。
+
+### 8.4 V9.6.2 工业级稳定性补丁（摘要）
+
+- **转写**：DashScope 任务轮询 **GET**；`_coerce_seconds_pair` 中 **`begin_time`/`end_time` 固定按毫秒**；`start_time`/`end_time` 毫秒启发式阈值提高至 **86400s**（防长录音误判）。
+- **流水线**：**`cached_words` 非空时跳过 ASR 润色**（与磁盘缓存语义一致）；**`safe_fs_segment` 200 字截断**（对齐 `memory_engine._safe_fs_segment`，防 Windows 路径过长）。
+- **评判**：阶段一 JSON salvage 成功后，在最终 **`AnalysisReport.total_score_deduction_reason`** 写入截断提示，避免「空靶点 + 满分」无感知；**`detect_logical_conflict`** 最小窗 **5** 字、总告警 **≤3**。
+- **记忆 / UI**：**`append_executive_memory`** 对相同 **`raw_text`** 跳过重复追加；审查台 **`_v3_build_report_dict_from_widgets`** 对 `report_draft_{stem}` 使用 **`.get`**，缺失时返回 `{}`。
+
+---
+
+### 8.5 V10.0 数据飞轮加速版
+
+V10.0 以**可分析性 + 多人共享**为核心，不引入云端依赖，分三阶段落地。
+
+#### 新增模块
+
+| 模块 | 职责 |
+|------|------|
+| `src/runtime_paths.py` | `get_memory_root()` / `get_asr_cache_root()`：读 `MEMORY_ROOT` / `CACHE_ROOT` 环境变量，支持共享盘路径覆盖，默认回退本地路径 |
+| `src/analytics_exporter.py` | `export_analytics(report, ctx)`：审查台锁定时静默导出 `{stem}_analytics.json`，结构化记录得分、风险分布、精炼次数等，供后续分析；失败不影响主流程 |
+| `src/benchmark_engine.py` | `scan_analytics_files(workspace_root)` + `build_benchmark(list)`：扫描所有历史 analytics JSON，聚合匿名行业基准（均分、得分分布、风险频率、精炼率、截断率）|
+
+#### 数据流新增链路
+
+```text
+锁定审查台
+  └→ _v3_finalize_stem()
+       ├→ apply_asr_original_text_override()  → *_analysis_report.json + *.html（原有）
+       └→ export_analytics()                  → *_analytics.json（V10.0 新增，静默）
+
+机构画像 Dashboard
+  └→ _v86_render_executive_dashboard()
+       ├→ get_company_dashboard_stats()        → KPI + 飞轮速度指数（V10.0 flywheel_metrics）
+       └→ _render_benchmark_section()          → 行业基准对比（scan + build_benchmark）
+```
+
+#### 共享盘配置方式
+
+```
+# 方式一：.env 文件（推荐本地开发）
+MEMORY_ROOT=Z:\AI路演教练\executive_memory
+CACHE_ROOT=Z:\AI路演教练\asr_cache
+
+# 方式二：系统环境变量（适合多同事共用已挂载盘）
+# Windows 系统属性 → 高级 → 环境变量 → 新建
+```
+
+所有调用 `default_store_dir()` / `get_default_cache_dir()` 的代码无需任何修改，通过环境变量自动切换存储根目录。
 
 ---
 
