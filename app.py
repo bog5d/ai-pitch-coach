@@ -804,22 +804,6 @@ def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
         if f"{base}_ort" not in st.session_state:
             st.session_state[f"{base}_ort"] = rp.get("original_text", "")
 
-        # 专家视图字段（_t1/_t2/_ded）：除首次初始化外，当值为空但原始数据非空且 toggle 尚未打开时
-        # 同样回补，防止精炼操作写入 "" 或旧草稿空字段导致专家视图白屏
-        # 安全边界：toggle=True 时 widget 托管 key，此时严禁写入
-        _expert_open = bool(st.session_state.get(f"{base}_expert_view", False))
-        for _suffix, _field in (
-            ("_t1", "tier1_general_critique"),
-            ("_t2", "tier2_qa_alignment"),
-            ("_ded", "deduction_reason"),
-        ):
-            _key = f"{base}{_suffix}"
-            _src = rp.get(_field, "")
-            if _key not in st.session_state:
-                st.session_state[_key] = _src
-            elif not st.session_state[_key] and _src and not _expert_open:
-                # session_state 为空但原始数据有内容，且 widget 未激活 → 安全回补
-                st.session_state[_key] = _src
         # V8.0 新增：精炼标记与批示
         if f"{base}_needs_refine" not in st.session_state:
             st.session_state[f"{base}_needs_refine"] = bool(rp.get("needs_refinement", False))
@@ -858,20 +842,15 @@ def _v3_build_report_dict_from_widgets(stem: str) -> dict:
         rps_out.append(
             {
                 "risk_level": st.session_state.get(f"{base}_lvl", rp.get("risk_level", "一般")),
-                "tier1_general_critique": st.session_state.get(
-                    f"{base}_t1", rp.get("tier1_general_critique", "")
-                ),
-                "tier2_qa_alignment": st.session_state.get(
-                    f"{base}_t2", rp.get("tier2_qa_alignment", "")
-                ),
+                # tier1/tier2/deduction 只读，直接从 draft 数据读取（不经 widget session_state）
+                "tier1_general_critique": rp.get("tier1_general_critique", ""),
+                "tier2_qa_alignment": rp.get("tier2_qa_alignment", ""),
                 "improvement_suggestion": st.session_state.get(
                     f"{base}_im", rp.get("improvement_suggestion", "")
                 ),
                 "start_word_index": int(rp.get("start_word_index", 0)),
                 "end_word_index": int(rp.get("end_word_index", 0)),
-                "deduction_reason": st.session_state.get(
-                    f"{base}_ded", rp.get("deduction_reason", "")
-                ),
+                "deduction_reason": rp.get("deduction_reason", ""),
                 "original_text": st.session_state.get(
                     f"{base}_ort", rp.get("original_text", "")
                 ),
@@ -1043,23 +1022,19 @@ def _v3_render_single_stem_review(stem: str) -> None:
             elif is_manual:
                 st.caption("人工条目无词级切片与自动试听。")
 
-            # ── 专家视图（折叠）：tier1 全文、tier2、扣分原因 ──
-            if st.toggle("专家视图 ▸", key=f"v3rp_{stem}_{rid}_expert_view"):
-                st.text_area(
-                    "Tier 1 · 顶尖视角（全文）",
-                    key=f"v3rp_{stem}_{rid}_t1",
-                    height=100,
-                )
-                st.text_area(
-                    "Tier 2 · QA 对齐",
-                    key=f"v3rp_{stem}_{rid}_t2",
-                    height=100,
-                )
-                st.text_area(
-                    "扣分原因 / QA 口径偏离说明",
-                    key=f"v3rp_{stem}_{rid}_ded",
-                    height=80,
-                )
+            # ── AI 推理链（只读，不可编辑）──────────────────────────────────
+            if st.toggle("🔍 AI 推理（只读）", key=f"v3rp_{stem}_{rid}_expert_view"):
+                _t1_txt = rp.get("tier1_general_critique", "")
+                _t2_txt = rp.get("tier2_qa_alignment", "")
+                _ded_txt = rp.get("deduction_reason", "")
+                st.caption("**Tier 1 · 商业逻辑顶尖视角**")
+                st.info(_t1_txt or "—")
+                if _t2_txt:
+                    st.caption("**Tier 2 · QA 口径对齐**")
+                    st.info(_t2_txt)
+                if _ded_txt:
+                    st.caption("**扣分依据**")
+                    st.info(_ded_txt)
 
             # ── V8.0 第二道防线：精炼标记与批示 ──
             st.divider()
@@ -1215,17 +1190,34 @@ def _v3_render_single_stem_review(stem: str) -> None:
                 f"已锁定：**{stem}** → JSON 与 HTML 已写入归档目录。\n"
                 f"HTML（脱敏文件名）：`{final_html.name}`"
             )
+            ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
+            iv = (ctx.get("interviewee") or "").strip() or ""
+            cid = (ctx.get("company_id") or "").strip()
             if harvest_n > 0:
-                ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
-                iv = (ctx.get("interviewee") or "").strip() or "该高管"
-                msg = (
-                    f"🌱 [收割完成] 系统已为 {iv} 自动提炼 {harvest_n} 条新经验，飞轮运转中！"
-                )
+                msg = f"🌱 已为「{iv or '该高管'}」自动提炼 {harvest_n} 条新经验入库，飞轮运转中！"
                 toast_fn = getattr(st, "toast", None)
                 if callable(toast_fn):
                     toast_fn(msg, icon="🌱")
                 else:
                     st.success(msg)
+            else:
+                # 明确告知 harvest_n==0 的原因，消除黑箱感
+                if not cid:
+                    st.warning(
+                        "⚠️ **记忆未入库**：侧边栏未选择项目（当前为「新建项目」状态）。"
+                        "请在侧边栏选择或创建一个项目后重新生成，记忆将自动归入该项目。"
+                    )
+                elif not iv or iv in ("未指定", "default"):
+                    st.warning(
+                        "⚠️ **记忆未入库**：被访谈人字段为空或「未指定」。"
+                        "请在上方录音配置中填写姓名后重新运行。"
+                    )
+                else:
+                    st.caption(
+                        f"💡 本次锁定未产生新记忆（项目：{cid} · 被访谈人：{iv}）。"
+                        "记忆仅在**你修改了 AI 初稿内容**时才会自动提炼——"
+                        "如改了「改进建议」或「原文引用」，下次锁定即可沉淀。"
+                    )
         except Exception as ex:
             st.error(f"导出失败：{ex!s}")
 
@@ -1318,6 +1310,23 @@ def _v3_render_review_workbench() -> None:
         "以下为 AI 初稿；请逐条核对、编辑或删除片段，并可人工增补。"
         "仅当点击「锁定并生成最终版 HTML」后才会写入最终 HTML。"
     )
+    # ── 记忆归属预告 ──────────────────────────────────────────────────────────
+    # 在审查开始前告知用户，修改内容后锁定，记忆将归入哪个项目/被访谈人
+    _mem_notices = []
+    for _stem in stems:
+        _ctx = st.session_state.get(f"v3_ctx_{_stem}") or {}
+        _cid = (_ctx.get("company_id") or "").strip()
+        _iv = (_ctx.get("interviewee") or "").strip()
+        if _cid and _iv and _iv not in ("未指定", "default"):
+            _mem_notices.append(f"**{_iv}** → 项目「{_cid}」")
+        elif not _cid:
+            _mem_notices.append(f"❌ 未选项目（记忆将无法入库）")
+        elif not _iv or _iv in ("未指定", "default"):
+            _mem_notices.append(f"❌ 被访谈人未填写（记忆将无法入库）")
+    if _mem_notices:
+        _notice_text = "　｜　".join(_mem_notices)
+        st.info(f"🧠 **锁定后记忆将归入**：{_notice_text}"
+                "　*（修改 AI 初稿内容后锁定才会产生新记忆）*")
     if len(stems) == 1:
         _v3_render_single_stem_review(stems[0])
     else:
