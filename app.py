@@ -120,6 +120,13 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> int:
     """锁定导出成功后：初稿 vs 终稿差异达标则静默提炼入库；返回新入库条数（失败不影响主流程）。"""
     ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
     cid = (ctx.get("company_id") or "").strip()
+    # 生成时未选项目，但锁定时用户已切换侧栏 → 实时补 company_id
+    if not cid:
+        _sidebar_cid = st.session_state.get("company_selector", "")
+        if _sidebar_cid and _sidebar_cid != "__new__":
+            cid = _sidebar_cid
+            ctx["company_id"] = cid
+            st.session_state[f"v3_ctx_{stem}"] = ctx
     if not cid:
         return 0
     tag = (ctx.get("interviewee") or "").strip() or "default"
@@ -847,6 +854,12 @@ def _v3_build_report_dict_from_widgets(stem: str) -> dict:
 
 def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     ctx = st.session_state[f"v3_ctx_{stem}"]
+    # 锁定时若生成时未选项目，用当前侧栏的选择实时补全 company_id
+    if not (ctx.get("company_id") or "").strip():
+        _sidebar_cid = st.session_state.get("company_selector", "")
+        if _sidebar_cid and _sidebar_cid != "__new__":
+            ctx["company_id"] = _sidebar_cid
+            st.session_state[f"v3_ctx_{stem}"] = ctx
     # 深拷贝后再校验；JSON 正文保持审查台明文，仅外发 HTML 文件名做 DLP 脱敏
     payload = copy.deepcopy(_v3_build_report_dict_from_widgets(stem))
     report = AnalysisReport.model_validate(payload)
@@ -1149,6 +1162,13 @@ def _v3_render_single_stem_review(stem: str) -> None:
             ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
             iv = (ctx.get("interviewee") or "").strip() or ""
             cid = (ctx.get("company_id") or "").strip()
+            # 若生成时未选项目，但锁定时用户已切换侧栏，实时补 company_id
+            if not cid:
+                _sidebar_cid = st.session_state.get("company_selector", "")
+                if _sidebar_cid and _sidebar_cid != "__new__":
+                    cid = _sidebar_cid
+                    ctx["company_id"] = cid
+                    st.session_state[f"v3_ctx_{stem}"] = ctx
             if harvest_n > 0:
                 msg = f"🌱 已为「{iv or '该高管'}」自动提炼 {harvest_n} 条新经验入库，飞轮运转中！"
                 toast_fn = getattr(st, "toast", None)
@@ -1268,17 +1288,22 @@ def _v3_render_review_workbench() -> None:
     )
     # ── 记忆归属预告 ──────────────────────────────────────────────────────────
     # 在审查开始前告知用户，修改内容后锁定，记忆将归入哪个项目/被访谈人
+    _sidebar_cid_now = st.session_state.get("company_selector", "")
+    _sidebar_cid_now = "" if _sidebar_cid_now == "__new__" else _sidebar_cid_now
     _mem_notices = []
     for _stem in stems:
         _ctx = st.session_state.get(f"v3_ctx_{_stem}") or {}
         _cid = (_ctx.get("company_id") or "").strip()
+        # 若生成时未选项目，实时回填当前侧栏选择（预告准确）
+        if not _cid and _sidebar_cid_now:
+            _cid = _sidebar_cid_now
         _iv = (_ctx.get("interviewee") or "").strip()
         if _cid and _iv and _iv not in ("未指定", "default"):
             _mem_notices.append(f"**{_iv}** → 项目「{_cid}」")
         elif not _cid:
-            _mem_notices.append(f"❌ 未选项目（记忆将无法入库）")
+            _mem_notices.append("❌ 未选项目（请在侧栏选择项目后再锁定）")
         elif not _iv or _iv in ("未指定", "default"):
-            _mem_notices.append(f"❌ 被访谈人未填写（记忆将无法入库）")
+            _mem_notices.append("❌ 被访谈人未填写（记忆将无法入库）")
     if _mem_notices:
         _notice_text = "　｜　".join(_mem_notices)
         st.info(f"🧠 **锁定后记忆将归入**：{_notice_text}"
