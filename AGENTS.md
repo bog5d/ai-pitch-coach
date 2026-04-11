@@ -8,9 +8,9 @@
 
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
-| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.0**），纯净包目录名随其变化。 |
-| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。 |
-| **回归测试** | `pytest tests/` → 当前全量 **137 passed**（含 `test_v90_*`）。 |
+| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.6.3**），纯净包目录名随其变化。 |
+| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。**V9.6.x**：两阶段深评、ASR 润色、魔法精炼等见 README。**V9.6.2**：**工业级稳定性十修**（DashScope GET、时间戳、缓存润色、路径截断、截断可感知、错题幂等、Dashboard 单次聚合、冲突检测降噪等，见 `CHANGELOG.md`）。**V9.6.3**：**审查台双缺陷修复**（问题背景截断 40→100 字；专家视图空值安全回补，见 `CHANGELOG.md`）。 |
+| **回归测试** | `pytest tests/` → 当前全量 **262 passed**（含 `test_bugfix_stability`、`test_v90_*`、`test_v96_*` 等）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 
@@ -61,7 +61,7 @@
 
 ## 4. 测试与回归
 
-- `pytest tests/`（全量，当前 **74 passed**）
+- `pytest tests/`（全量，当前 **262 passed**）
 - 根目录：`pytest test_v7_acceptance.py`（若存在）
 - V7.2 覆写：`tests/test_v72_backend_override.py`
 - V7.5：`tests/test_v75_formatter.py`、`tests/test_v75_json_salvage.py`
@@ -70,6 +70,7 @@
 - V8.6：`tests/test_v86_memory_engine.py`、`test_v86_harvester.py`、`test_v86_injector.py`
 - V8.6.1：`tests/test_v861_memory_evolution.py`
 - V9.0：`tests/test_v90_aggregator.py`
+- V9.6.2 稳定性：`tests/test_bugfix_stability.py`
 
 ---
 

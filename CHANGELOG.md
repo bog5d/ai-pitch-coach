@@ -4,6 +4,38 @@
 
 ---
 
+## [V9.6.3] — 2026-04-11 · 审查台双缺陷修复（同事测试反馈）
+
+针对 V9.6.2 同事测试发现的两个审查台体验问题精准修复，**262 passed**。
+
+### 修复（2 项）
+
+| # | 问题描述 | 根因 | 修复位置 |
+|---|---------|------|---------|
+| Fix-A | 问题背景只显示约 40 字，后半句被截断看不全 | `_extract_tier1_summary` 上限硬编码 40 字，tier1 首句多为 50-80 字 | `app.py:_extract_tier1_summary`：上限 40→100 字 |
+| Fix-B | 专家视图打开后 Tier1/Tier2/扣分原因三框全空白 | 精炼操作或旧草稿将 session_state 中 `_t1/_t2/_ded` 写为 `""`；`_v3_init_risk_widgets` 检测到 key「已存在」便跳过初始化；widget 从 session_state 读到空字符串显示空白 | `app.py:_v3_init_risk_widgets`：新增空值安全回补逻辑（仅在 toggle 未激活时从 rp 回填） |
+
+---
+
+## [V9.6.2] — 2026-04-10 · 工业级稳定性十修（红蓝对抗 / TDD）
+
+在 V9.6.1 之上，对 ASR 兜底、时间戳、缓存润色、路径长度、阶段一截断可感知性、Streamlit 竞态、错题本幂等、指挥中心 IO、冲突检测误报等 **10 项** 做加固；全量 **`pytest tests/` → 262 passed**（Mock 外部 API）。
+
+### 修复摘要
+
+| 领域 | 要点 |
+|------|------|
+| 转写 | DashScope 任务轮询 **POST→GET**；`_coerce_seconds_pair`：`begin_time`/`end_time` 固定按毫秒；`start_time` 启发式阈值 **86400s** 防长录音误判 |
+| 流水线 | **`cached_words` 命中时跳过 `polish_transcription_text`**（防二次润色漂移）；**`safe_fs_segment` 200 字截断**（防 Windows `MAX_PATH`） |
+| LLM | 阶段一 salvage 后 **`total_score_deduction_reason` 持久化截断提示**；**`detect_logical_conflict`** 5 字起窗 + 总告警 **≤3** |
+| 记忆 / UI | **`append_executive_memory`** `raw_text` 幂等；**`get_company_dashboard_stats(..., pre_loaded_pairs=)`** 消双倍读盘；**`_v3_build_report_dict_from_widgets`** `.get` 防 KeyError |
+
+### 测试
+
+- 新增 / 扩展：**`tests/test_bugfix_stability.py`**（32 cases）、**`tests/test_v76_asr_cache.py`**（缓存跳过润色）等。
+
+---
+
 ## [V9.6.1] — 2026-04-09 · 稳定性四连修（同事反馈专项）
 
 V9.6 生产运行后同事反馈四类稳定性问题，本版本为外科手术修复，零新功能引入，228 passed（全绿）。
