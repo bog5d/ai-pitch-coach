@@ -81,6 +81,10 @@ from report_builder import (
 from schema import AnalysisReport, RiskPoint, TranscriptionWord
 from analytics_exporter import export_analytics
 from benchmark_engine import build_benchmark, scan_analytics_files
+from institution_registry import fuzzy_match as institution_fuzzy_match, resolve as institution_resolve, get_all as get_all_institutions, increment_session_count as institution_inc_session
+from institution_profiler import list_all_institution_profiles, build_institution_profile
+from briefing_engine import generate_briefing_data, generate_briefing_text
+from github_sync import sync_analytics as github_sync_analytics, sync_institutions as github_sync_institutions
 
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
@@ -166,11 +170,12 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
 
     ws_path = Path((workspace_root or "").strip() or str(get_writable_app_root()))
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 会话总览",
         "👤 个人成长",
         "🌐 行业基准",
         "🧠 AI纠偏库",
+        "🏦 机构画像",
     ])
 
     # ════════════════════════════════════════════════
@@ -198,6 +203,12 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
     # ════════════════════════════════════════════════
     with tab4:
         _render_ai_correction_library(company_id)
+
+    # ════════════════════════════════════════════════
+    # Tab 5：机构画像 — 跨公司投资机构分析（V10.2）
+    # ════════════════════════════════════════════════
+    with tab5:
+        _render_institution_profiles(ws_path)
 
 
 def _render_session_overview(company_id: str, ws_path: Path) -> None:
@@ -648,6 +659,120 @@ def _render_benchmark_section(workspace_root: str) -> None:
     # ── END 行业基准对比 ─────────────────────────────────────────────────────
 
 
+def _render_institution_profiles(ws_path: Path) -> None:
+    """V10.2 Tab 5：机构画像全览 + 会前简报生成。"""
+    import plotly.express as px
+
+    st.divider()
+    st.subheader("🏦 投资机构画像")
+
+    with st.spinner("聚合机构数据…"):
+        profiles = list_all_institution_profiles(ws_path)
+
+    if not profiles:
+        st.info(
+            "暂无机构数据。在「批量分析」页填写「投资机构名称」并完成锁定导出后，"
+            "机构画像将自动积累。"
+        )
+    else:
+        # ── 机构总览列表 ────────────────────────────────────────────────
+        st.caption(f"共 {len(profiles)} 家机构，按场次降序")
+        rows = []
+        for p in profiles:
+            rows.append({
+                "机构名称": p["canonical_name"] or p["institution_id"],
+                "场次": p["total_sessions"],
+                "涉及公司": p["total_companies"],
+                "平均得分": p["avg_score"],
+                "严重风险率": f"{p['severe_risk_ratio']*100:.0f}%",
+                "最爱追问": "、".join(r["risk_type"] for r in p["top_risk_types"][:3]),
+            })
+        st.dataframe(rows, use_container_width=True, height=200)
+
+        # ── 选择机构下钻 ────────────────────────────────────────────────
+        inst_options = [p["canonical_name"] or p["institution_id"] for p in profiles]
+        selected_inst_name = st.selectbox(
+            "选择机构查看详情", inst_options, key="v102_inst_select"
+        )
+        selected_profile = next(
+            (p for p in profiles if (p["canonical_name"] or p["institution_id"]) == selected_inst_name),
+            None,
+        )
+
+        if selected_profile:
+            p = selected_profile
+            c1, c2, c3 = st.columns(3)
+            c1.metric("总场次", p["total_sessions"])
+            c2.metric("平均得分", p["avg_score"])
+            c3.metric("严重风险率", f"{p['severe_risk_ratio']*100:.0f}%")
+
+            if p["score_trend"]:
+                fig = px.line(
+                    y=p["score_trend"],
+                    x=list(range(1, len(p["score_trend"]) + 1)),
+                    labels={"x": "场次", "y": "得分"},
+                    title=f"📈 {selected_inst_name} 历次访谈得分趋势",
+                )
+                fig.update_layout(height=220, margin=dict(t=40, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+
+            if p["top_risk_types"]:
+                st.caption("▸ 该机构最爱追问的问题类型")
+                for r in p["top_risk_types"]:
+                    st.markdown(f"- **{r['risk_type']}**（历史占比 {r['ratio']*100:.0f}%，共 {r['count']} 次）")
+
+    # ── 会前简报生成器 ────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📋 会前简报生成器")
+    st.caption("输入即将见面的机构和公司，AI 自动生成今天最该准备的事项。")
+
+    all_institutions = get_all_institutions()
+    inst_name_list = [r["canonical_name"] for r in all_institutions] if all_institutions else []
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        briefing_inst = st.selectbox(
+            "即将见面的投资机构",
+            ["（手动输入）"] + inst_name_list,
+            key="v102_briefing_inst",
+        )
+        if briefing_inst == "（手动输入）":
+            briefing_inst = st.text_input("机构名称", key="v102_briefing_inst_manual")
+    with col_b:
+        briefing_company = st.text_input(
+            "被访公司 company_id",
+            placeholder="例如：泽天智航",
+            key="v102_briefing_company",
+        )
+
+    if st.button("🚀 生成会前简报", key="v102_gen_briefing"):
+        _bi = (briefing_inst or "").strip()
+        _bc = (briefing_company or "").strip()
+        if not _bi:
+            st.error("请填写投资机构名称。")
+        elif not _bc:
+            st.error("请填写被访公司 ID。")
+        else:
+            with st.spinner("AI 正在生成会前简报…"):
+                # 解析机构 ID
+                _bid, _bcanon = institution_resolve(_bi)
+                text = generate_briefing_text(
+                    institution_id=_bid,
+                    company_id=_bc,
+                    workspace_root=ws_path,
+                    company_name=_bc,
+                    institution_name=_bcanon or _bi,
+                )
+            st.markdown(text)
+            st.download_button(
+                "⬇️ 下载简报 (.md)",
+                data=text.encode("utf-8"),
+                file_name=f"briefing_{_bi}_{_bc}.md",
+                mime="text/markdown",
+                key="v102_download_briefing",
+            )
+
+
 def _preflight_subprocess_kwargs() -> dict:
     """Windows 下隐藏 FFmpeg 自检子进程控制台。"""
     kw: dict = {}
@@ -897,7 +1022,23 @@ def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     st.session_state[f"v46_preview_html_{stem}"] = str(final)
     harvest_n = _v86_harvest_finalize_if_needed(stem, payload)
     # V10.1：locked 覆写 analytics JSON（覆盖 draft，status="locked"）
-    export_analytics(report_for_disk, ctx, status="locked")
+    analytics_path = export_analytics(report_for_disk, ctx, status="locked")
+
+    # V10.2：机构会话计数 + GitHub 异步推送
+    _iid = (ctx.get("institution_id") or "").strip()
+    _cid = (ctx.get("company_id") or "").strip()
+    if _iid:
+        try:
+            institution_inc_session(_iid)
+        except Exception:
+            pass
+        if analytics_path:
+            try:
+                github_sync_analytics(analytics_path, _cid)
+                github_sync_institutions()
+            except Exception:
+                pass
+
     return final, harvest_n
 
 
@@ -1890,11 +2031,31 @@ def main() -> None:
             help="请先明确业务场景后再生成，避免 AI 用错复盘视角。",
         )
     with col2:
-        batch_name = st.text_input(
-            "项目/批次名称（必填）",
-            placeholder="例如：某机构代号、尽调批次",
-            help="将作为子文件夹名称的一部分，并进入 AI 上下文。",
+        institution_name_input = st.text_input(
+            "投资机构名称（必填）",
+            placeholder="例如：迪策资本、高瓴资本、红杉中国",
+            help="输入后系统自动识别历史记录中的同名机构，积累画像。",
+            key="v102_institution_name",
         )
+        # 模糊匹配提示
+        _inst_raw = (institution_name_input or "").strip()
+        if _inst_raw and len(_inst_raw) >= 2:
+            _inst_match = institution_fuzzy_match(_inst_raw)
+            if _inst_match and _inst_match["canonical_name"].lower() != _inst_raw.lower():
+                st.caption(
+                    f"💡 发现历史记录：**{_inst_match['canonical_name']}**"
+                    f"（{_inst_match['session_count']} 场）"
+                    "，若是同一机构请统一用上面名称，或直接继续将自动合并。"
+                )
+
+        batch_label = st.text_input(
+            "项目批次备注（选填）",
+            placeholder="例如：尽调第2轮、2026Q1",
+            help="区分同一机构多次访谈批次，不影响机构画像归档。",
+            key="v102_batch_label",
+        )
+        # 兼容旧逻辑：batch_name = 机构名 + 批次
+        batch_name = _inst_raw or (batch_label or "").strip() or "未命名批次"
 
     st.caption(
         "上传音频（可 1 条或多条）后，在下方按 **每一条录音** 填写被访谈人、备注，并可选上传该段对应的参考 QA。"
@@ -2101,8 +2262,8 @@ def main() -> None:
         st.error("请先在下拉框中选择真实的「业务大类」，不能保留「请先选择业务场景」。")
         return
 
-    if not (batch_name or "").strip():
-        st.error("请填写「项目/批次名称」（必填）。")
+    if not (institution_name_input or "").strip():
+        st.error("请填写「投资机构名称」（必填）。")
         return
 
     for idx in range(len(uploaded_list)):
@@ -2197,6 +2358,10 @@ def main() -> None:
             if selected_company_id == "__new__"
             else (selected_company_id or "").strip()
         )
+
+        # V10.2 机构注册：resolve 确保 institution_id 稳定，自动合并别名
+        _inst_input = (st.session_state.get("v102_institution_name") or "").strip()
+        _institution_id, _institution_canonical = institution_resolve(_inst_input) if _inst_input else ("", "")
 
         for i in range(n):
             fname = recording_labels[i]
@@ -2372,6 +2537,8 @@ def main() -> None:
                         "mask_html_body": bool(mask_html_body),
                         "html_mask_map": dict(html_mask_map),
                         "company_id": mem_cid,
+                        "institution_id": _institution_id,
+                        "institution_canonical": _institution_canonical,
                     }
                     st.session_state[f"v3_ctx_{stem}"] = _draft_ctx
 
