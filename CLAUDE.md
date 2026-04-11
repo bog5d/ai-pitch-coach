@@ -143,4 +143,4 @@ def test_pipeline_with_cache(tmp_path):
 
 ---
 
-*最后更新：V9.6.4 ASR/落盘异常防护修复；铁律一至五仍适用。*
+*最后更新：V9.6.5 ASR热词UI升级+BUG-C自动填充保护；铁律一至五仍适用。*

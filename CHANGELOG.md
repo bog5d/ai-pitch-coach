@@ -4,6 +4,23 @@
 
 ---
 
+## [V9.6.5] — 2026-04-11 · ASR 热词 UI 升级 + 被访谈人自动填充保护（BUG-C）
+
+日常使用流畅度提升：热词输入框升级 + 自动填充不再覆盖手动修改，**271 passed**。
+
+### 新增 / 改进（2 项）
+
+| # | 描述 | 修复位置 |
+|---|------|---------|
+| 改进-1 | ASR 热词输入框从 `st.text_input` 升级为带折叠的 `st.text_area`（height=72），显示实时词数，移至批量分析区顶部独立折叠块，使用体验更清晰 | `app.py`：热词 expander 移至 `uploaded_list` 循环前 |
+| BUG-C | 上传新文件时，自动猜测的「被访谈人」会静默覆盖用户已手动修改的内容 | `src/audio_filename_hints.py`：新增 `should_autofill_iv()` 纯函数；`app.py`：自动填充前调用保护逻辑，记录 `_batch_iv_autofilled_{idx}` 上次自动值 |
+
+### 测试
+
+- `tests/test_audio_filename_hints.py` 新增 5 个 `should_autofill_iv` 测试用例（共 11 个）
+
+---
+
 ## [V9.6.4] — 2026-04-11 · ASR 落盘异常防护（稳定性红蓝对抗审计）
 
 稳定性审计发现两处无异常保护的崩溃路径，**266 passed**。
