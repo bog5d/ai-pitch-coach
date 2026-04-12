@@ -12,9 +12,9 @@
 
 ## P1 — 本月（补齐飞轮闭环）
 
-- [ ] P1.1 历史数据迁移脚本（从 recording_label 逆推机构名，补写 institution_id）
-- [ ] P1.2 融资结果字段（schema + UI + analytics 存储）
-- [ ] P1.3 记忆权重衰减（90天未被 recall 降权，写入 memory_engine）
+- [x] P1.1 历史数据迁移脚本（从 recording_label 逆推机构名，补写 institution_id）✅
+- [x] P1.2 融资结果字段（schema + UI + analytics 存储）✅
+- [x] P1.3 记忆权重衰减（90天未被 recall 降权，写入 memory_engine）✅
 
 ## P2 — 下季度（产品升级）
 
@@ -31,8 +31,8 @@
 ---
 
 ## 当前版本
-- 代码版本：V10.3（425 tests passed，P0 ✅）
-- 下一个发版：V10.4（P1全部完成后）
+- 代码版本：V10.3（455 tests passed，P0 ✅ P1 ✅）
+- 下一个发版：V10.4（P2全部完成后，或按需发版）
 
 ## 关键技术决策备忘
 - 短名称匹配：先去掉常见后缀（资本/基金/投资/创投）再比较，无需额外依赖

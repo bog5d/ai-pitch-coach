@@ -11,7 +11,7 @@ import logging
 import os
 import tempfile
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -439,6 +439,107 @@ def _build_flywheel_metrics(pairs: list) -> dict[str, Any]:
         "monthly_new": monthly_new,
         "weight_distribution": wd,
     }
+
+
+def decay_executive_memories_for_company(
+    company_id: str,
+    *,
+    days_threshold: int = 90,
+    decay_factor: float = 0.9,
+    store_dir: Path | None = None,
+) -> int:
+    """
+    V10.3 P1.3 记忆权重衰减。
+
+    对指定公司所有 tag 桶扫描：
+    - updated_at 距今 > days_threshold 天 → weight *= decay_factor（最低 0.0）
+    - updated_at 为空或无法解析 → 跳过（不崩溃）
+
+    返回本次衰减的条目总数。
+    """
+    d = Path(store_dir) if store_dir is not None else default_store_dir()
+    cid = (company_id or "").strip()
+    if not cid or cid == "__new__":
+        return 0
+
+    now = datetime.now(timezone.utc)
+    threshold_td = timedelta(days=days_threshold)
+    total_decayed = 0
+
+    for stem_tag in list_executive_memory_tags(cid, store_dir=d):
+        items = load_executive_memories(cid, stem_tag, store_dir=d)
+        if not items:
+            continue
+        changed = False
+        new_items: list[ExecutiveMemory] = []
+        for m in items:
+            ua = (m.updated_at or "").strip()
+            if not ua:
+                new_items.append(m)
+                continue
+            try:
+                # 解析 ISO8601（带 Z 或 +00:00）
+                dt_str = ua.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(dt_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                new_items.append(m)
+                continue
+            if (now - dt) > threshold_td:
+                new_weight = max(0.0, float(m.weight) * decay_factor)
+                new_items.append(m.model_copy(update={"weight": round(new_weight, 6)}))
+                changed = True
+                total_decayed += 1
+            else:
+                new_items.append(m)
+        if changed:
+            save_executive_memories(cid, stem_tag, new_items, store_dir=d)
+
+    return total_decayed
+
+
+def decay_all_companies(
+    *,
+    days_threshold: int = 90,
+    decay_factor: float = 0.9,
+    store_dir: Path | None = None,
+) -> dict[str, int]:
+    """
+    对工作区内所有公司批量运行记忆权重衰减。
+
+    返回 {company_id: decayed_count} 字典（仅含有衰减的公司）。
+    失败时静默跳过该公司。
+    """
+    d = Path(store_dir) if store_dir is not None else default_store_dir()
+    result: dict[str, int] = {}
+
+    if not d.is_dir():
+        return result
+
+    # 扫描 store_dir 直接子目录：每个子目录对应一个 company_id
+    for company_dir in sorted(d.iterdir()):
+        if not company_dir.is_dir():
+            continue
+        company_id = company_dir.name
+        try:
+            count = decay_executive_memories_for_company(
+                company_id,
+                days_threshold=days_threshold,
+                decay_factor=decay_factor,
+                store_dir=d,
+            )
+            if count > 0:
+                result[company_id] = count
+        except Exception:
+            logger.exception("decay_all_companies: 处理 %s 失败，已跳过", company_id)
+
+    total = sum(result.values())
+    logger.info(
+        "decay_all_companies: 共衰减 %d 条（%d 家公司）",
+        total, len(result),
+    )
+    return result
 
 
 def get_company_dashboard_stats(
