@@ -506,6 +506,7 @@ def _render_html(
         scene=report.scene_analysis,
         total_score=report.total_score,
         total_score_deduction=total_score_deduction or "",
+        positive_highlights=list(report.positive_highlights or []),
         cards=cards,
         watermark_line=watermark_line or "",
         generated_footer_line=generated_footer_line or "",
@@ -737,6 +738,30 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             white-space: pre-wrap;
             word-break: break-word;
         }
+        .highlights-section {
+            margin-top: 28px;
+            padding: 20px 24px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, rgba(74,222,128,0.08), rgba(94,234,212,0.06));
+            border: 1px solid rgba(74,222,128,0.25);
+        }
+        .highlights-title {
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            color: var(--mild);
+            margin: 0 0 12px;
+        }
+        .highlights-list {
+            margin: 0;
+            padding-left: 18px;
+        }
+        .highlights-list li {
+            margin-bottom: 8px;
+            font-size: 0.95rem;
+            color: var(--text);
+            line-height: 1.55;
+        }
 
         .card {
             background: var(--card);
@@ -862,6 +887,16 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                     <div class="score-deduction"><strong>总分扣分说明</strong><br/>{{ total_score_deduction or "（未填写）" }}</div>
                 </div>
             </div>
+        {% if positive_highlights %}
+        <div class="highlights-section">
+            <p class="highlights-title">✅ 表现亮点</p>
+            <ul class="highlights-list">
+                {% for h in positive_highlights %}
+                <li>{{ h }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
         </header>
 
         {% for c in cards %}

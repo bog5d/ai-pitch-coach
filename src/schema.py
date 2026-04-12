@@ -31,12 +31,16 @@ class RiskTargetCandidate(BaseModel):
 
 
 class RiskScanResult(BaseModel):
-    """V9.6 阶段一输出：场景速写 + 风险靶点列表。"""
+    """V9.6 阶段一输出：场景速写 + 风险靶点列表 + 亮点列表（V10.5新增）。"""
 
     scene_analysis: SceneAnalysis = Field(..., description="全局场景推断")
     targets: List[RiskTargetCandidate] = Field(
         default_factory=list,
         description="待阶段二逐个点名深评的靶点",
+    )
+    highlights: List[str] = Field(
+        default_factory=list,
+        description="发言人表现亮点（3-5条），用于平衡评估，仅描述正面表现，不含改进建议",
     )
 
 
@@ -105,6 +109,10 @@ class AnalysisReport(BaseModel):
     total_score_deduction_reason: str = Field(
         default="",
         description="总分层面的扣分说明：结合QA与整体表现简述为何不是满分",
+    )
+    positive_highlights: List[str] = Field(
+        default_factory=list,
+        description="发言人表现亮点（3-5条）：具体说明发言人做得好的地方，用于平衡评估报告",
     )
     risk_points: List[RiskPoint] = Field(default_factory=list, description="所有踩坑点列表")
 

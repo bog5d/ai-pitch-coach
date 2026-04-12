@@ -638,8 +638,9 @@ def _build_risk_scan_system_prompt(
         if _hist_use
         else ""
     )
-    return f"""你是拥有 15 年经验的尽调与路演复盘架构师。当前任务为**阶段一：找靶子**。
-你只负责从带 [index] 词索引的转写稿中扫描**发言人侧**应答风险位置，输出结构化靶点列表；不要写长篇改进话术（阶段二会逐点深评）。
+    return f"""你是拥有 15 年经验的尽调与路演复盘架构师。当前任务为**阶段一：全场扫描**。
+你负责从带 [index] 词索引的转写稿中：(a) 扫描发言人侧的实质性风险位置，(b) 同时发现发言人的表现亮点。
+不要写长篇改进话术（阶段二会逐点深评）。
 
 <CONTEXT>
 业务场景：{ctx["biz_type"]}
@@ -657,10 +658,16 @@ def _build_risk_scan_system_prompt(
 {_hist_block}
 <TASK>
 1. 推断 scene_analysis（场景类型与说话人角色关系）。
-2. 列出 risk targets：每项含 start_word_index、end_word_index、problem_description（简练）、risk_type（类型标签）。
-3. 板子打在【发言人】应答上；勿把投资人的质问当成发言人的 risk。
-4. 索引必须来自转写中出现的 [index]；单靶点覆盖时长宜在约 45–60 秒量级（狙击清单项仍遵守原 60 秒纪律）。
-5. 仅输出符合 JSON Schema 的一个对象，键为 scene_analysis、targets。
+2. 【找靶子】列出 risk targets：每项含 start_word_index、end_word_index、problem_description（简练）、risk_type（类型标签）。
+   - 板子打在【发言人】应答上；勿把投资人的质问当成发言人的 risk。
+   - 索引必须来自转写中出现的 [index]；单靶点覆盖时长宜在约 45–60 秒量级。
+   - **质量门槛（极重要）**：只标记具有实质性逻辑问题、数据矛盾、口径偏离、沟通失误的片段。
+     以下情况**严禁**列为靶子：正常口语化表达、轻微语气词使用、流畅自然的自我介绍、无关紧要的寒暄。
+   - 总靶子数量不超过 8 个；若实质性问题少于 3 个，只输出真正存在的问题，禁止凑数。
+3. 【找亮点】识别 3-5 条发言人的表现亮点，填入 highlights 数组（字符串列表）。
+   亮点应具体、有依据（如「准确引用了员工数量并分部门说明」「清晰表述了团队分工逻辑」），而非泛泛而谈。
+   若发言人整体表现一般，仍需找出相对较好的 2-3 个方面。
+4. 仅输出符合 JSON Schema 的一个对象，键为 scene_analysis、targets、highlights。
 </TASK>
 <JSON_SCHEMA>
 {schema_str}
@@ -1048,6 +1055,7 @@ def evaluate_pitch(
         scene_analysis=scan.scene_analysis,
         total_score=score,
         total_score_deduction_reason=reason,
+        positive_highlights=list(getattr(scan, "highlights", None) or []),
         risk_points=risk_points,
     )
 

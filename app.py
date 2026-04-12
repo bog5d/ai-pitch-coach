@@ -1075,6 +1075,9 @@ def _v3_init_header_widgets(stem: str, draft: dict) -> None:
         st.session_state[f"v3_{stem}_total_ded"] = draft.get(
             "total_score_deduction_reason", ""
         )
+    if f"v3_{stem}_highlights" not in st.session_state:
+        _hl = draft.get("positive_highlights") or []
+        st.session_state[f"v3_{stem}_highlights"] = "\n".join(_hl) if _hl else ""
 
 
 def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
@@ -1181,6 +1184,9 @@ def _v3_build_report_dict_from_widgets(stem: str) -> dict:
     except (TypeError, ValueError):
         ts_int = int(draft.get("total_score", 0))
     ts_int = max(0, min(100, ts_int))
+    # positive_highlights: 编辑区存为换行分隔文本，输出为字符串列表
+    _hl_raw = st.session_state.get(f"v3_{stem}_highlights", "")
+    _hl_list = [line.strip() for line in (_hl_raw or "").splitlines() if line.strip()]
     return {
         "scene_analysis": {
             "scene_type": st.session_state.get(
@@ -1196,6 +1202,7 @@ def _v3_build_report_dict_from_widgets(stem: str) -> dict:
         "total_score_deduction_reason": st.session_state.get(
             f"v3_{stem}_total_ded", draft.get("total_score_deduction_reason", "")
         ),
+        "positive_highlights": _hl_list,
         "risk_points": rps_out,
     }
 
@@ -1307,6 +1314,27 @@ def _v3_render_single_stem_review(stem: str) -> None:
         key=f"v3_{stem}_total_ded",
         height=100,
     )
+
+    # ── V10.5 亮点展示区（平衡评估）──────────────────────────────────────────
+    _hl_draft = (draft.get("positive_highlights") or [])
+    if _hl_draft:
+        with st.expander("✅ 表现亮点（AI 发现的正面表现）", expanded=True):
+            st.caption("以下为 AI 识别出的发言亮点，可手动编辑（一行一条）后锁定写入报告。")
+            st.text_area(
+                "亮点列表（一行一条）",
+                key=f"v3_{stem}_highlights",
+                height=120,
+                label_visibility="collapsed",
+            )
+    else:
+        with st.expander("✅ 表现亮点（可手动填写）", expanded=False):
+            st.caption("AI 未识别到明显亮点，或本次分析早于 V10.5。可手动填写（一行一条）。")
+            st.text_area(
+                "亮点列表（一行一条）",
+                key=f"v3_{stem}_highlights",
+                height=80,
+                label_visibility="collapsed",
+            )
 
     words_raw = st.session_state.get(f"words_{stem}") or []
     words_models = [TranscriptionWord.model_validate(x) for x in words_raw]
@@ -1549,12 +1577,17 @@ def _v3_render_single_stem_review(stem: str) -> None:
         type="primary",
         key=f"v3finalize_{stem}",
     ):
+        _toast = getattr(st, "toast", None)
         try:
-            final_html, harvest_n = _v3_finalize_stem(stem)
+            with st.spinner("正在生成 HTML 报告，请稍候…"):
+                final_html, harvest_n = _v3_finalize_stem(stem)
             st.success(
-                f"已锁定：**{stem}** → JSON 与 HTML 已写入归档目录。\n"
+                f"✅ 已锁定：**{stem}**\n"
+                f"JSON 与 HTML 已写入归档目录。\n"
                 f"HTML（脱敏文件名）：`{final_html.name}`"
             )
+            if callable(_toast):
+                _toast(f"✅ HTML 报告已生成：{final_html.name}", icon="✅")
             ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
             iv = (ctx.get("interviewee") or "").strip() or ""
             cid = (ctx.get("company_id") or "").strip()
@@ -1567,13 +1600,11 @@ def _v3_render_single_stem_review(stem: str) -> None:
                     st.session_state[f"v3_ctx_{stem}"] = ctx
             if harvest_n > 0:
                 msg = f"🌱 已为「{iv or '该高管'}」自动提炼 {harvest_n} 条新经验入库，飞轮运转中！"
-                toast_fn = getattr(st, "toast", None)
-                if callable(toast_fn):
-                    toast_fn(msg, icon="🌱")
+                if callable(_toast):
+                    _toast(msg, icon="🌱")
                 else:
                     st.success(msg)
             else:
-                # 明确告知 harvest_n==0 的原因，消除黑箱感
                 if not cid:
                     st.warning(
                         "⚠️ **记忆未入库**：侧边栏未选择项目（当前为「新建项目」状态）。"
@@ -1591,7 +1622,11 @@ def _v3_render_single_stem_review(stem: str) -> None:
                         "如改了「改进建议」或「原文引用」，下次锁定即可沉淀。"
                     )
         except Exception as ex:
-            st.error(f"导出失败：{ex!s}")
+            _err_msg = f"导出失败：{ex!s}"
+            st.error(_err_msg)
+            if callable(_toast):
+                _toast(f"❌ {_err_msg}", icon="❌")
+            logging.getLogger("ai_pitch_coach.ui").exception("锁定导出异常")
 
     ph = st.session_state.get(f"v46_preview_html_{stem}")
     if ph and os.name == "nt" and Path(ph).is_file():
