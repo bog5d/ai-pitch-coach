@@ -122,6 +122,10 @@ def export_analytics(
             "recording_label": stem_name,
             "institution_id": (ctx.get("institution_id") or "").strip(),
             "institution_canonical": (ctx.get("institution_canonical") or "").strip(),
+            # V10.3 P1.2 融资结果（锁定时由用户填写，空 = 未记录）
+            "fundraising_outcome": (ctx.get("fundraising_outcome") or "").strip(),
+            "fundraising_amount": (ctx.get("fundraising_amount") or "").strip(),
+            "fundraising_valuation": (ctx.get("fundraising_valuation") or "").strip(),
             "total_score": report.total_score,
             "total_risk_count": len(report.risk_points),
             "risk_breakdown": _build_risk_breakdown(report),

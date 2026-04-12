@@ -1049,6 +1049,11 @@ def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     final = html_path.resolve()
     st.session_state[f"v46_preview_html_{stem}"] = str(final)
     harvest_n = _v86_harvest_finalize_if_needed(stem, payload)
+    # V10.3 P1.2：从 session_state 读取融资结果写入 ctx
+    _fo = st.session_state.get(f"fundraising_outcome_{stem}", "（未记录）")
+    ctx["fundraising_outcome"] = "" if _fo == "（未记录）" else _fo
+    ctx["fundraising_amount"] = st.session_state.get(f"fundraising_amount_{stem}", "").strip()
+    ctx["fundraising_valuation"] = st.session_state.get(f"fundraising_valuation_{stem}", "").strip()
     # V10.1：locked 覆写 analytics JSON（覆盖 draft，status="locked"）
     analytics_path = export_analytics(report_for_disk, ctx, status="locked")
 
@@ -1316,6 +1321,31 @@ def _v3_render_single_stem_review(stem: str) -> None:
                             st.rerun()
                         except Exception as ex:
                             st.error(f"AI 润色失败：{ex!s}")
+
+    # ── V10.3 P1.2 融资结果记录（锁定前可选填） ─────────────────────────────────
+    with st.expander("📊 本次会谈融资进展（可选，锁定后写入数据飞轮）", expanded=False):
+        _outcome_key = f"fundraising_outcome_{stem}"
+        _amount_key  = f"fundraising_amount_{stem}"
+        _val_key     = f"fundraising_valuation_{stem}"
+        outcome_opt = st.radio(
+            "本次会谈后融资状态",
+            options=["（未记录）", "进行中", "已成功", "未推进"],
+            index=0,
+            key=_outcome_key,
+            horizontal=True,
+        )
+        if outcome_opt == "已成功":
+            c_a, c_v = st.columns(2)
+            c_a.text_input(
+                "融资金额（万元，选填）",
+                key=_amount_key,
+                placeholder="如：5000",
+            )
+            c_v.text_input(
+                "融资后估值（万元，选填）",
+                key=_val_key,
+                placeholder="如：80000",
+            )
 
     if st.button(
         "✅ 确认无误，锁定并生成最终版 HTML 报告",
