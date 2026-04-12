@@ -809,7 +809,10 @@ def _render_institution_profiles(ws_path: Path) -> None:
     # ── 会前简报生成器 ────────────────────────────────────────────────────────
     st.divider()
     st.subheader("📋 会前简报生成器")
-    st.caption("输入即将见面的机构和公司，AI 自动生成今天最该准备的事项。")
+    st.caption(
+        "输入即将见面的机构和公司，AI 自动生成今天最该准备的事项。"
+        "（首次见某机构或暂无历史数据时，将自动生成通用建议版简报。）"
+    )
 
     all_institutions = get_all_institutions()
     inst_name_list = [r["canonical_name"] for r in all_institutions] if all_institutions else []
@@ -825,7 +828,7 @@ def _render_institution_profiles(ws_path: Path) -> None:
             briefing_inst = st.text_input("机构名称", key="v102_briefing_inst_manual")
     with col_b:
         briefing_company = st.text_input(
-            "被访公司 company_id",
+            "被访公司名称",
             placeholder="例如：泽天智航",
             key="v102_briefing_company",
         )
@@ -2257,6 +2260,11 @@ def main() -> None:
                 logging.getLogger("garbage_collector").exception("启动 GC 失败")
 
         threading.Thread(target=_startup_gc, daemon=True).start()
+
+    # 启动时自动检测：若 .env 已有两个 Key，直接标记全绿，不需要用户再手动点「保存并测试」
+    if "env_all_ok" not in st.session_state:
+        if _env_configured("DASHSCOPE_API_KEY") and _env_configured("DEEPSEEK_API_KEY"):
+            st.session_state["env_all_ok"] = True
 
     st.title("🚀 AI 路演与访谈复盘系统")
 

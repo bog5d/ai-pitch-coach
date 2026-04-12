@@ -22,6 +22,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from asset_bridge import build_asset_section, load_asset_index
 from institution_profiler import build_institution_profile
 from runtime_paths import get_writable_app_root
 
@@ -120,11 +121,12 @@ def generate_briefing_text(
 
     # 数据不足时直接返回摘要
     if not data["has_history"]:
-        return (
+        base = (
             f"## 📋 会前简报：{display_company} × {display_institution}\n\n"
             "**暂无该机构的历史数据**，本次见面后将开始积累画像。\n\n"
             "建议提前准备：估值逻辑、商业模式可持续性、核心财务数据。"
         )
+        return base + _make_asset_appendix(data)
 
     # 构建 prompt 数据
     top_risks_text = "\n".join(
@@ -182,10 +184,12 @@ def generate_briefing_text(
         )
         text = resp.choices[0].message.content or ""
         header = f"## 📋 会前简报：{display_company} × {display_institution}\n\n"
-        return header + text
+        briefing = header + text
     except Exception as exc:
         logger.warning("briefing_engine: LLM 调用失败，返回数据摘要（%s）", exc)
-        return _fallback_briefing(data, display_company, display_institution)
+        briefing = _fallback_briefing(data, display_company, display_institution)
+
+    return briefing + _make_asset_appendix(data)
 
 
 def _fallback_briefing(data: dict, company: str, institution: str) -> str:
@@ -211,3 +215,24 @@ def _fallback_briefing(data: dict, company: str, institution: str) -> str:
             lines.append(f"- {q}")
 
     return "\n".join(lines)
+
+
+def _make_asset_appendix(data: dict) -> str:
+    """
+    从 .fos_data/asset_index.json 读取资产清单，
+    按简报中出现的风险类型做关键词匹配，返回「库中相关资产」段落。
+    失败或无匹配时返回空字符串，不影响调用方。
+    """
+    try:
+        assets = load_asset_index()
+        if not assets:
+            return ""
+
+        # 收集关键词：公司历史遗留坑 + 机构最爱追问类型
+        keywords = (
+            [p["risk_type"] for p in data.get("company_pits", [])]
+            + [r["risk_type"] for r in data.get("institution_top_risks", [])]
+        )
+        return build_asset_section(keywords, assets)
+    except Exception:
+        return ""
