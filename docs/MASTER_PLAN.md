@@ -18,9 +18,10 @@
 
 ## P2 — 下季度（产品升级）
 
-- [ ] P2.1 会前演练模式（AI扮投资人 × 机构画像 × 实时评分）
-- [ ] P2.2 客户公司只读 Dashboard
-- [ ] P2.3 app.py 拆分（batch_analysis / review_workbench / dashboard）
+- [x] P2.1 会前演练模式（AI扮投资人 × 机构画像 × 实时评分）✅
+- [x] P2.2 客户公司只读 Dashboard（静态 HTML 导出，Chart.js 趋势图）✅
+- [x] P2.3 多页架构初建（pages/1_🎯_会前演练.py + pages/2_📤_客户报告.py）✅
+      ⚠️ app.py 全量拆分（batch/review/dashboard 三页）延至 V10.4 专项 Sprint
 
 ## P3 — 长期护城河
 
@@ -31,8 +32,8 @@
 ---
 
 ## 当前版本
-- 代码版本：V10.3（455 tests passed，P0 ✅ P1 ✅）
-- 下一个发版：V10.4（P2全部完成后，或按需发版）
+- 代码版本：V10.3（477 tests passed，P0 ✅ P1 ✅ P2.1/2.2/2.3 ✅）
+- 下一个发版：V10.4（P3 或 app.py 全量拆分 Sprint）
 
 ## 关键技术决策备忘
 - 短名称匹配：先去掉常见后缀（资本/基金/投资/创投）再比较，无需额外依赖
