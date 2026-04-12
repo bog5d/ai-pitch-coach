@@ -27,7 +27,7 @@ from schema import AnalysisReport
 
 logger = logging.getLogger(__name__)
 
-_ANALYTICS_VERSION = "V10.1"
+_ANALYTICS_VERSION = "V10.3"
 # 截断标记关键词（与 llm_judge.py BUG-1 修复对齐）
 _TRUNCATION_KEYWORDS = ("截断", "salvage", "被截断")
 # uuid5 namespace for deterministic session_id based on stem
@@ -120,6 +120,8 @@ def export_analytics(
             "interviewee": (ctx.get("interviewee") or "").strip(),
             "biz_type": (ctx.get("biz_type") or "").strip(),
             "recording_label": stem_name,
+            "institution_id": (ctx.get("institution_id") or "").strip(),
+            "institution_canonical": (ctx.get("institution_canonical") or "").strip(),
             "total_score": report.total_score,
             "total_risk_count": len(report.risk_points),
             "risk_breakdown": _build_risk_breakdown(report),

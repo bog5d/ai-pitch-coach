@@ -223,9 +223,9 @@ class TestExportAnalyticsContent:
         assert str(parsed) == data["session_id"]
 
     def test_version_field(self, tmp_path):
-        """version 字段应为 V10.1。"""
+        """version 字段应为 V10.3。"""
         data = self._load(tmp_path)
-        assert data["version"] == "V10.1"
+        assert data["version"] == "V10.3"
 
     def test_default_status_is_locked(self, tmp_path):
         """默认（不传 status）写入的状态应为 locked。"""
