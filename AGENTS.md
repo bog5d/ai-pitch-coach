@@ -9,8 +9,8 @@
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
 | **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.6.5**），纯净包目录名随其变化。 |
-| **能力代际** | **V7.5–V8.4** 见文件地图与 ARCHITECTURE。**V8.6.x** 错题本、静默收割、`<HISTORICAL_PROFILE>`、DeepSeek 提炼、命中计数。**V9.0**：**全景机构画像**（`get_company_dashboard_stats` + **Plotly**）、**四卡 KPI**、下钻筛选；聚合 **严格 `company_id`**。**V9.6.x**：两阶段深评、ASR 润色、魔法精炼等见 README。**V9.6.2**：**工业级稳定性十修**（DashScope GET、时间戳、缓存润色、路径截断、截断可感知、错题幂等、Dashboard 单次聚合、冲突检测降噪等，见 `CHANGELOG.md`）。**V9.6.3**：**审查台双缺陷修复**（问题背景截断 40→100 字；专家视图空值安全回补）。**V9.6.4**：**ASR/落盘异常防护**。**V9.6.5**：**ASR热词UI升级+BUG-C自动填充保护**。**V10.0-Task1✅**：`MEMORY_ROOT`/`CACHE_ROOT` 环境变量，共享网盘多人协作。**V10.0-Task2✅**：`analytics_exporter.py`，锁定时静默导出 `{stem}_analytics.json`。**V10.0-Task3✅**：`flywheel_metrics`，飞轮速度看板。**V10.0-Task4✅**：`benchmark_engine.py` 跨公司匿名基准。**V10.1✅**：**双态留痕**（AI初稿就绪写 draft、锁定覆写 locked）+ **Dashboard 4-Tab 重构**（📊会话总览/👤个人成长/🌐行业基准/🧠AI纠偏库），"凡运行必留痕"，不再依赖用户修改。 |
-| **回归测试** | `pytest tests/` → 当前全量 **362 passed**（含 `test_v100_*`、`test_v101_*` 等）。 |
+| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab（📊会话总览/👤个人成长/🌐行业基准/🧠AI纠偏库）。**V10.2✅**：机构数据飞轮四件套（institution_registry 短名称模糊匹配、institutions.json 备份、GitHub 同步状态、会前简报）。**V10.3✅ P0~P3 全完成**：P0 短名称修复+备份+同步告警；P1 历史数据迁移+融资结果字段+记忆权重衰减；P2 会前演练模式+客户只读Dashboard+多页架构；P3 融资成功率预测+Partner投资人画像（`src/partner_profiler.py`）+**多语言支持**（`src/language_detector.py`，中英文自动检测，英文访谈全程英文输出）。当前无待开发 Backlog，下一步可从「结果反馈闭环」（融资成功/失败 → 预测模型训练）切入。 |
+| **回归测试** | `pytest tests/` → 当前全量 **513 passed**（含 `test_language_detector`、`test_partner_profiler`、`test_v103_*` 等）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 
