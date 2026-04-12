@@ -8,11 +8,12 @@
 
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
-| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V9.6.5**），纯净包目录名随其变化。 |
-| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab（📊会话总览/👤个人成长/🌐行业基准/🧠AI纠偏库）。**V10.2✅**：机构数据飞轮四件套（institution_registry 短名称模糊匹配、institutions.json 备份、GitHub 同步状态、会前简报）。**V10.3✅ P0~P3 全完成**：P0 短名称修复+备份+同步告警；P1 历史数据迁移+融资结果字段+记忆权重衰减；P2 会前演练模式+客户只读Dashboard+多页架构；P3 融资成功率预测+Partner投资人画像（`src/partner_profiler.py`）+**多语言支持**（`src/language_detector.py`，中英文自动检测，英文访谈全程英文输出）。当前无待开发 Backlog，下一步可从「结果反馈闭环」（融资成功/失败 → 预测模型训练）切入。 |
-| **回归测试** | `pytest tests/` → 当前全量 **513 passed**（含 `test_language_detector`、`test_partner_profiler`、`test_v103_*` 等）。 |
+| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V10.4**），纯净包目录名随其变化。 |
+| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。 |
+| **回归测试** | `pytest tests/` → 当前全量 **550 passed**（含 `test_asset_bridge` 15个用例）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
+| **姊妹项目 FSS** | `D:\AI_Workspaces\AI_CangJie_FSS`（仓颉资产台账系统，GitHub: `bog5d/CangJie-Asset-Console`）。核心文件：`资产控制台主程序.py`（V4.0 主程序）、`cangjie_kimiv2.py`（轻量版）。两系统通过 `D:\AI_Workspaces\.fos_data\asset_index.json` 交换资产清单数据（FSS写入，AI Coach读取）。**改FSS代码前先读该目录的 `更新日志.md`**。 |
 
 **改 `app.py` 狙击表前请先 grep**：禁止出现对 **`batch_sniper_editor_*`** 的 `st.session_state[...] =` 赋值（仅允许 `del` 以重置 widget）。初始表只允许写 **`batch_sniper_init_*`**。
 
