@@ -659,9 +659,37 @@ def _render_benchmark_section(workspace_root: str) -> None:
     # ── END 行业基准对比 ─────────────────────────────────────────────────────
 
 
+def _render_sync_status_alert() -> None:
+    """P0.3：GitHub 同步状态告警条。连续失败 ≥ 3 次显示红色警告。"""
+    try:
+        sync_st = github_sync_analytics.__module__  # 确认模块已导入
+        from github_sync import get_sync_status
+        s = get_sync_status()
+        if not s["configured"]:
+            st.warning(
+                "⚠️ **GitHub 数据同步未配置**：`.env` 中缺少 `COACH_DATA_GITHUB_PAT` 或"
+                " `COACH_DATA_GITHUB_REPO`，数据仅保存在本地，无法跨设备汇聚。",
+                icon="⚠️",
+            )
+        elif s["needs_alert"]:
+            st.error(
+                f"🔴 **GitHub 同步连续失败 {s['consecutive_failures']} 次**"
+                f"（最后错误：{s.get('last_error', '未知')}）。"
+                "数据未同步到 coach_data repo，请检查 PAT 是否过期或网络是否正常。"
+                f"上次成功：{s.get('last_success') or '从未成功'}",
+            )
+        elif s.get("last_success"):
+            st.caption(f"☁️ 上次同步成功：{s['last_success']}")
+    except Exception:
+        pass  # 告警本身不影响主流程
+
+
 def _render_institution_profiles(ws_path: Path) -> None:
-    """V10.2 Tab 5：机构画像全览 + 会前简报生成。"""
+    """V10.3 Tab 5：机构画像全览 + 会前简报 + 同步状态告警。"""
     import plotly.express as px
+
+    # P0.3：同步状态告警
+    _render_sync_status_alert()
 
     st.divider()
     st.subheader("🏦 投资机构画像")

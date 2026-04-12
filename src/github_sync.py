@@ -28,6 +28,9 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+import tempfile
+from datetime import datetime, timezone
+
 from dotenv import load_dotenv
 from runtime_paths import get_writable_app_root
 
@@ -36,6 +39,88 @@ logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.github.com"
 _TIMEOUT = 30
+_STATUS_FILENAME = "github_sync_status.json"
+_MAX_CONSECUTIVE_FAILURES = 3   # 超过此次数在 Dashboard 显示红色告警
+
+
+def _get_status_path() -> Path:
+    try:
+        return Path(get_writable_app_root()) / _STATUS_FILENAME
+    except Exception:
+        return Path(".") / _STATUS_FILENAME
+
+
+def _load_sync_status() -> dict:
+    path = _get_status_path()
+    if not path.exists():
+        return {"last_attempt": None, "last_success": None,
+                "last_error": None, "consecutive_failures": 0}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"last_attempt": None, "last_success": None,
+                "last_error": None, "consecutive_failures": 0}
+
+
+def _save_sync_status(status: dict) -> None:
+    """原子写入同步状态。"""
+    path = _get_status_path()
+    try:
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(status, ensure_ascii=False, indent=2))
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception as exc:
+        logger.debug("github_sync: 状态写入失败（%s）", exc)
+
+
+def _record_success() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    status = _load_sync_status()
+    status.update(last_attempt=now, last_success=now,
+                  last_error=None, consecutive_failures=0)
+    _save_sync_status(status)
+
+
+def _record_failure(error: str) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    status = _load_sync_status()
+    status["last_attempt"] = now
+    status["last_error"] = error
+    status["consecutive_failures"] = status.get("consecutive_failures", 0) + 1
+    _save_sync_status(status)
+
+
+def get_sync_status() -> dict:
+    """
+    返回当前同步状态，供 Dashboard 显示。
+
+    返回字段：
+      last_attempt        : ISO 时间字符串 | None
+      last_success        : ISO 时间字符串 | None
+      last_error          : 错误描述 | None
+      consecutive_failures: 连续失败次数
+      needs_alert         : bool — 是否需要显示红色告警
+      configured          : bool — PAT/REPO 是否已配置
+    """
+    status = _load_sync_status()
+    try:
+        _get_config()
+        configured = True
+    except ValueError:
+        configured = False
+    status["needs_alert"] = (
+        not configured
+        or status.get("consecutive_failures", 0) >= _MAX_CONSECUTIVE_FAILURES
+    )
+    status["configured"] = configured
+    return status
 
 
 def _get_config() -> tuple[str, str, str]:
@@ -117,7 +202,9 @@ def push_file(
     try:
         pat, owner, repo = _get_config()
     except ValueError as exc:
-        logger.warning("github_sync: 配置缺失，跳过推送（%s）", exc)
+        err_msg = f"配置缺失：{exc}"
+        logger.warning("github_sync: %s", err_msg)
+        _record_failure(err_msg)
         return False
 
     try:
@@ -143,14 +230,19 @@ def push_file(
 
         if status in (200, 201):
             logger.info("github_sync: 推送成功 %s → %s", local_path.name, path_in_repo)
+            _record_success()
             return True
         else:
             msg = body.get("message", "unknown error")
-            logger.warning("github_sync: 推送失败 %s（%d %s）", local_path.name, status, msg)
+            err_msg = f"HTTP {status}: {msg}"
+            logger.warning("github_sync: 推送失败 %s（%s）", local_path.name, err_msg)
+            _record_failure(err_msg)
             return False
 
     except Exception as exc:
-        logger.warning("github_sync: 推送异常，静默跳过（%s）", exc)
+        err_msg = f"{type(exc).__name__}: {exc}"
+        logger.warning("github_sync: 推送异常，静默跳过（%s）", err_msg)
+        _record_failure(err_msg)
         return False
 
 
