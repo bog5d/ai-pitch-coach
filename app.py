@@ -1246,6 +1246,8 @@ def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
     ctx["fundraising_outcome"] = "" if _fo == "（未记录）" else _fo
     ctx["fundraising_amount"] = st.session_state.get(f"fundraising_amount_{stem}", "").strip()
     ctx["fundraising_valuation"] = st.session_state.get(f"fundraising_valuation_{stem}", "").strip()
+    # V10.3 P3.2：投资人姓名（Partner 画像）
+    ctx["investor_name"] = (st.session_state.get("v103_investor_name") or "").strip()
     # V10.1：locked 覆写 analytics JSON（覆盖 draft，status="locked"）
     analytics_path = export_analytics(report_for_disk, ctx, status="locked")
 
@@ -2297,6 +2299,13 @@ def main() -> None:
                     f"（{_inst_match['session_count']} 场）"
                     "，若是同一机构请统一用上面名称，或直接继续将自动合并。"
                 )
+
+        investor_name_input = st.text_input(
+            "接待投资人姓名（选填）",
+            placeholder="例如：李合伙人、王总监",
+            help="记录本次参会的投资人姓名，用于 Partner 级别画像分析。",
+            key="v103_investor_name",
+        )
 
         batch_label = st.text_input(
             "项目批次备注（选填）",

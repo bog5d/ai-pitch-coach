@@ -74,13 +74,13 @@ class TestEvaluatePitchMocked(unittest.TestCase):
                 speaker_id="未知",
             ),
         ]
+        # V9.6：evaluate_pitch 阶段一为 RiskScanResult（无靶点则不再调用深评）
         payload = {
             "scene_analysis": {
                 "scene_type": "极端测试",
                 "speaker_roles": "未提供内部 QA，基于行业常识推断",
             },
-            "total_score": 0,
-            "risk_points": [],
+            "targets": [],
         }
         mock_resp = MagicMock()
         mock_resp.choices = [
@@ -102,7 +102,7 @@ class TestEvaluatePitchMocked(unittest.TestCase):
                 },
                 qa_text="",
             )
-            self.assertEqual(report.total_score, 0)
+            self.assertEqual(report.total_score, 100)
             self.assertEqual(len(report.risk_points), 0)
 
 

@@ -126,6 +126,8 @@ def export_analytics(
             "fundraising_outcome": (ctx.get("fundraising_outcome") or "").strip(),
             "fundraising_amount": (ctx.get("fundraising_amount") or "").strip(),
             "fundraising_valuation": (ctx.get("fundraising_valuation") or "").strip(),
+            # V10.3 P3.2 投资人姓名（Partner 级别画像）
+            "investor_name": (ctx.get("investor_name") or "").strip(),
             "total_score": report.total_score,
             "total_risk_count": len(report.risk_points),
             "risk_breakdown": _build_risk_breakdown(report),

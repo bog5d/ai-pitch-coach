@@ -96,6 +96,7 @@ def test_pipeline_passes_historical_memories_to_evaluate(tmp_path):
         explicit_context=jp.build_explicit_context("01_机构路演", "项目", "张三"),
         qa_text="",
         memory_company_id="co1",
+        skip_asr_polish=True,
     )
 
     with (
@@ -143,6 +144,7 @@ def test_pipeline_skips_memory_when_interviewee_placeholder(tmp_path):
         explicit_context=ctx,
         qa_text="",
         memory_company_id="co1",
+        skip_asr_polish=True,
     )
 
     with (
@@ -180,6 +182,7 @@ def test_pipeline_skips_memory_load_when_company_empty(tmp_path):
         explicit_context=jp.build_explicit_context("01_机构路演", "项目", "张三"),
         qa_text="",
         memory_company_id="",
+        skip_asr_polish=True,
     )
 
     with (

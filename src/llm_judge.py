@@ -25,6 +25,7 @@ from openai import APIError, OpenAI
 from pydantic import ValidationError
 
 from retry_policy import run_with_backoff
+from language_detector import detect_language_from_words, get_language_prompt_hint
 from schema import (
     AnalysisReport,
     ExecutiveMemory,
@@ -749,6 +750,7 @@ def deep_evaluate_single_risk(
     qa_text: str = "",
     company_background: str = "",
     historical_memories: list[ExecutiveMemory] | None = None,
+    lang_hint: str = "",  # P3.3: 语言指令（英文访谈时非空）
 ) -> RiskPoint:
     """
     V9.6 阶段二：针对单个靶点调用 LLM，生成完整 RiskPoint（军工 / 硬科技 IR 深评视角）。
@@ -777,7 +779,8 @@ def deep_evaluate_single_risk(
         qa_use,
         company_background,
         historical_memories=historical_memories,
-    )
+    ) + lang_hint  # P3.3: 英文访谈时追加语言指令
+
     target_json = json.dumps(
         {
             "start_word_index": sw,
@@ -787,11 +790,23 @@ def deep_evaluate_single_risk(
         },
         ensure_ascii=False,
     )
+    _user_risk_prefix = (
+        "[RISK TARGET]\n" if lang_hint else "【风险靶点】\n"
+    )
+    _user_transcript_label = (
+        "Surrounding transcript segment (with [index] anchors):\n\n"
+        if lang_hint
+        else "以下是该靶点周边的转写片段（含 [索引] 词锚）：\n\n"
+    )
+    _user_output_instruction = (
+        "Output a single RiskPoint JSON object."
+        if lang_hint
+        else "请输出单个 RiskPoint JSON 对象。"
+    )
     user_prompt = (
-        f"【风险靶点】\n{target_json}\n\n"
-        "以下是该靶点周边的转写片段（含 [索引] 词锚）：\n\n"
-        f"{segment_text}\n\n"
-        "请输出单个 RiskPoint JSON 对象。"
+        f"{_user_risk_prefix}{target_json}\n\n"
+        f"{_user_transcript_label}{segment_text}\n\n"
+        f"{_user_output_instruction}"
     )
 
     client, model_name = _make_client(model_choice)
@@ -863,6 +878,12 @@ def evaluate_pitch(
 
     _stage1_truncated = False
 
+    # V10.3 P3.3 — 语言检测（采样前 200 词，零依赖）
+    _detected_lang = detect_language_from_words(words)
+    _lang_hint = get_language_prompt_hint(_detected_lang)
+    if _detected_lang == "en":
+        logger.info("evaluate_pitch: 检测到英文访谈，已启用英文响应模式")
+
     transcript = format_transcript_for_llm(words)
     if not transcript.strip():
         raise ValueError("转写词列表为空，无法评估")
@@ -896,11 +917,14 @@ def evaluate_pitch(
         qa_use,
         bg_use,
         historical_memories=historical_memories,
+    ) + _lang_hint  # P3.3: 英文访谈时追加语言指令
+
+    _scan_user_prefix = (
+        "The following is the interview transcript (each word prefixed with [index]):\n\n"
+        if _detected_lang == "en"
+        else "以下是本场沟通转写（每个词前有 [索引]，targets 中索引必须来自这些锚点）：\n\n"
     )
-    scan_user = (
-        "以下是本场沟通转写（每个词前有 [索引]，targets 中索引必须来自这些锚点）：\n\n"
-        f"{transcript}"
-    )
+    scan_user = _scan_user_prefix + transcript
 
     client, model_name = _make_client(model_choice)
     max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
@@ -998,6 +1022,7 @@ def evaluate_pitch(
                 qa_text=qa_use,
                 company_background=bg_use,
                 historical_memories=historical_memories,
+                lang_hint=_lang_hint,  # P3.3: 英文访谈时传入语言指令
             )
             return idx, rp
         except Exception:
