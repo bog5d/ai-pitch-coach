@@ -232,12 +232,35 @@ def _render_session_overview(company_id: str, ws_path: Path) -> None:
     locked = sum(1 for s in items if s.get("status") == "locked")
     avg_score = round(sum(s.get("total_score", 0) for s in items) / total, 1) if total else 0.0
 
+    # V10.3 P3.1 融资成功率预测
+    _pred_prob = None
+    _pred_signal = "neutral"
+    try:
+        from outcome_predictor import predict_success_probability
+        _pred = predict_success_probability(items)
+        _pred_prob = _pred["probability"]
+        _pred_signal = _pred["signal"]
+    except Exception:
+        pass
+
     with st.container(border=True):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("总复盘场次", total, help="包含 AI 初稿（草稿）和已锁定导出的场次")
         c2.metric("已锁定场次", locked)
         c3.metric("覆盖人数", len(people))
         c4.metric("项目均分", f"{avg_score:.1f}" if total else "—")
+        if _pred_prob is not None:
+            _signal_icons = {
+                "strong_positive": "🟢⬆️", "positive": "🟢",
+                "neutral": "🟡", "negative": "🔴", "strong_negative": "🔴⬇️",
+            }
+            c5.metric(
+                "融资成功预测",
+                f"{_pred_prob*100:.0f}%",
+                help=f"基于历史路演数据的启发式预测，仅供参考。信号：{_signal_icons.get(_pred_signal, '')}",
+            )
+        else:
+            c5.metric("融资成功预测", "—", help="暂无足够数据")
 
     if total == 0:
         st.info(
