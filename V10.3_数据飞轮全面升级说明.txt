@@ -1,0 +1,63 @@
+AI 路演教练 V10.3 — 数据飞轮全面升级说明
+==========================================
+发布日期：2026-04-12
+测试通过：513 passed（全量 Mock 回归）
+
+【本版核心主题】
+以 PM 红蓝对抗视角全面体检，修复已知数据污染风险，补全飞轮闭环缺失环节。
+
+【P0 — 数据污染防火墙（本周必修）】
+1. 短名称模糊匹配修复（institution_registry.py）
+   - 问题：「红杉」「红杉中国」「红杉资本」会被识别为 3 家不同机构，数据分裂
+   - 修复：SequenceMatcher 相似度 ≥0.8 + 拼音首字母比对，自动归并同一机构
+2. institutions.json 备份机制
+   - 每次写入前自动保留上一版本 institutions.json.bak，防止单点故障数据丢失
+3. GitHub 同步状态追踪
+   - github_sync_status.json 记录最近同步时间和结果
+   - Dashboard 顶部显示同步状态告警（PAT 过期、推送失败时明显提示）
+
+【P1 — 飞轮数据补全】
+4. 历史数据迁移脚本（src/analytics_migrator.py）
+   - V10.2 之前的 analytics JSON 缺少 institution_id 字段
+   - 脚本从 recording_label 逆推机构名，自动补写，让旧数据重新进入机构画像
+5. 融资结果字段
+   - analytics JSON 新增：fundraising_outcome（succeeded/failed/ongoing）、
+     fundraising_amount、fundraising_valuation
+   - 审查台锁定前新增「融资结果记录」折叠区（可选填）
+6. 记忆权重衰减
+   - 90 天未被 recall 的 ExecutiveMemory 自动降权（×0.8/次）
+   - Dashboard 首次加载时静默执行，防止陈旧记忆长期占据高权重位
+
+【P2 — 产品体验升级】
+7. 会前演练模式（practice_engine.py）
+   - AI 根据机构画像扮演投资人，生成定向追问
+   - 创始人文字作答，AI 逐轮给出评分和改进建议
+   - 入口：Dashboard → 机构画像 Tab → 「🎯 开始演练」按钮
+8. 客户只读 Dashboard（client_dashboard.py）
+   - 一键导出该项目的静态 HTML 报告页（不含主理人机密字段）
+   - 可安全发给客户公司，让他们看到自己的复盘进度曲线
+   - 入口：Dashboard → 会话总览 Tab → 「📤 导出客户报告」
+9. 多页架构初建（pages/ 目录）
+   - 演练模式和客户报告作为独立 Streamlit page 分离，为后续拆分 app.py 奠基
+
+【P3 — 长期护城河】
+10. 融资成功率预测模型（outcome_predictor.py）
+    - 基于历史有结果的 analytics 数据，统计得分区间和风险类型的成功率分布
+    - Dashboard 会话总览自动显示当前 session 的预测区间
+    - 注：模型精度依赖数据积累，>=20 条有结果数据后预测才有参考价值
+11. Partner 投资人画像（partner_profiler.py）
+    - 审查台新增「接待投资人姓名」字段（选填）
+    - analytics 写入 investor_name，支持按投资人个人维度聚合访谈画像
+12. 多语言支持（language_detector.py）
+    - 自动检测访谈录音语言（中文 / 英文）
+    - 英文访谈场景：AI 分析报告、风险点描述、改进建议全部以英文输出
+    - 两阶段深评（扫描 + 精评）均已接入语言指令
+
+【升级注意事项】
+- 如使用共享网盘（MEMORY_ROOT/CACHE_ROOT 环境变量），升级后建议手动运行
+  `python src/analytics_migrator.py` 补全历史数据的 institution_id 字段
+- institutions.json 备份文件在 .executive_memory/ 目录下，升级后首次写入时自动创建
+
+【下一步方向（供参考）】
+- 结果反馈闭环：融资结果数据积累到 20-30 条后，训练预测模型从「找问题」升级到「预测成功率」
+- app.py 逐步拆分：将 batch_analysis / review_workbench / dashboard 迁移到独立页面
