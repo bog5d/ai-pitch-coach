@@ -97,9 +97,11 @@ def export_analytics(
             analysis_json_path.stem + "_analytics.json"
         )
 
-        # 确定性 session_id：同一 stem 始终相同，locked 覆盖 draft 时 ID 不变
-        stem_name = analysis_json_path.stem
-        session_id = str(uuid.uuid5(_SESSION_NS, stem_name))
+        # 确定性 session_id：用完整绝对路径生成，不同目录同名文件不会碰撞
+        # 同一路径 draft/locked 多次调用保持相同 ID（覆盖语义）
+        stem_name = analysis_json_path.stem  # 保留 stem_name 供后续 recording_label 字段使用
+        _id_seed = str(analysis_json_path.resolve())
+        session_id = str(uuid.uuid5(_SESSION_NS, _id_seed))
 
         # draft 覆写时保留原始生成时间；locked 时更新为当前时间
         generated_at = _iso_now_utc_z()

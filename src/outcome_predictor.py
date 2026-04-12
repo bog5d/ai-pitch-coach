@@ -84,12 +84,20 @@ def predict_success_probability(
     factors.append(f"平均路演得分 {avg_score:.1f}（基础贡献 {base:.2f}）")
 
     # ── 2. 严重风险惩罚 ────────────────────────────────────────────────────
+    def _safe_count(rb: dict, level: str) -> int:
+        """安全读取 risk_breakdown 中指定级别的 count，格式异常时返回 0。"""
+        val = rb.get(level)
+        if not isinstance(val, dict):
+            return 0
+        raw = val.get("count", 0)
+        return raw if isinstance(raw, int) else 0
+
     total_risk_counts = []
     for s in sessions:
         rb = s.get("risk_breakdown") or {}
-        severe = rb.get("严重", {}).get("count", 0) if isinstance(rb.get("严重"), dict) else 0
-        normal = rb.get("一般", {}).get("count", 0) if isinstance(rb.get("一般"), dict) else 0
-        light  = rb.get("轻微", {}).get("count", 0) if isinstance(rb.get("轻微"), dict) else 0
+        severe = _safe_count(rb, "严重")
+        normal = _safe_count(rb, "一般")
+        light  = _safe_count(rb, "轻微")
         total = severe + normal + light
         total_risk_counts.append((severe, total))
 

@@ -29,6 +29,10 @@ from runtime_paths import get_writable_app_root
 load_dotenv(get_writable_app_root() / ".env")
 logger = logging.getLogger(__name__)
 
+# 对话历史最大轮数上限（每轮 = investor + founder 各一条消息）
+# 超过后自动裁剪最旧记录，防止长会话内存无限增长
+MAX_HISTORY_TURNS = 20
+
 # 评分低于此分数视为「弱项」，归入 summary.weak_areas
 _WEAK_SCORE_THRESHOLD = 60
 
@@ -240,6 +244,11 @@ def evaluate_answer_and_next(
     }
     session["rounds"].append(round_record)
     session["conversation_history"].append({"role": "founder", "content": answer})
+
+    # 超出历史上限时裁剪最旧消息，保留最近 MAX_HISTORY_TURNS 轮
+    _max_msgs = MAX_HISTORY_TURNS * 2  # 每轮两条消息
+    if len(session["conversation_history"]) > _max_msgs:
+        session["conversation_history"] = session["conversation_history"][-_max_msgs:]
 
     # ── 生成下一问 ────────────────────────────────────────────────────────────
     try:
