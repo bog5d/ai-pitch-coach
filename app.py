@@ -301,6 +301,33 @@ def _render_session_overview(company_id: str, ws_path: Path) -> None:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
+    # ── V10.3 P2.2 导出客户只读报告 ──────────────────────────────────────────
+    st.divider()
+    with st.expander("📤 导出客户进度报告（只读 HTML，可安全分享）", expanded=False):
+        st.caption("生成不含机密内容（无风险点详情）的静态 HTML 报告，可发送给客户公司。")
+        if st.button("生成客户报告", key=f"gen_client_report_{company_id}"):
+            try:
+                from client_dashboard import collect_company_data, generate_client_dashboard_html
+                with st.spinner("生成报告中…"):
+                    report_data = collect_company_data(company_id, ws_path)
+                    out_dir = ws_path / "client_reports"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    import re
+                    safe_cid = re.sub(r"[^\w\-]", "_", company_id)
+                    out_file = out_dir / f"{safe_cid}_client_report.html"
+                    generate_client_dashboard_html(report_data, out_file)
+                html_bytes = out_file.read_bytes()
+                st.success(f"✅ 报告已生成：`{out_file.name}`")
+                st.download_button(
+                    "⬇️ 下载客户报告 (.html)",
+                    data=html_bytes,
+                    file_name=out_file.name,
+                    mime="text/html",
+                    key=f"dl_client_report_{company_id}",
+                )
+            except Exception as ex:
+                st.error(f"生成失败：{ex}")
+
 
 def _render_ai_correction_library(company_id: str) -> None:
     """Tab 4：AI纠偏库 — 专属错题本（原 全景机构画像 核心内容）。"""
