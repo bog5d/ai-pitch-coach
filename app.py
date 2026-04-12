@@ -170,12 +170,13 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
 
     ws_path = Path((workspace_root or "").strip() or str(get_writable_app_root()))
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 会话总览",
         "👤 个人成长",
         "🌐 行业基准",
         "🧠 AI纠偏库",
         "🏦 机构画像",
+        "🎯 会前演练",
     ])
 
     # ════════════════════════════════════════════════
@@ -209,6 +210,12 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
     # ════════════════════════════════════════════════
     with tab5:
         _render_institution_profiles(ws_path)
+
+    # ════════════════════════════════════════════════
+    # Tab 6：会前演练 — AI 扮投资人，实时问答评分（V10.3 P2.1）
+    # ════════════════════════════════════════════════
+    with tab6:
+        _render_practice_mode(company_id, ws_path)
 
 
 def _render_session_overview(company_id: str, ws_path: Path) -> None:
@@ -799,6 +806,141 @@ def _render_institution_profiles(ws_path: Path) -> None:
                 mime="text/markdown",
                 key="v102_download_briefing",
             )
+
+
+def _render_practice_mode(company_id: str, ws_path: Path) -> None:
+    """V10.3 P2.1 Tab 6：会前演练 — AI 扮投资人，问答评分。"""
+    try:
+        from practice_engine import (
+            evaluate_answer_and_next,
+            get_session_summary,
+            start_practice_session,
+        )
+        from institution_registry import get_all as get_all_institutions
+        from institution_registry import resolve as institution_resolve
+    except ImportError as e:
+        st.error(f"演练模式依赖缺失：{e}")
+        return
+
+    st.subheader("🎯 会前演练模式")
+    st.caption("AI 扮演投资机构投资人，你作答，逐轮实时评分。模拟越接近真实场景，准备越充分。")
+
+    # ── 选择机构 ────────────────────────────────────────────────────────────────
+    all_institutions = get_all_institutions()
+    inst_name_list = [r["canonical_name"] for r in all_institutions] if all_institutions else []
+
+    col_inst, col_start = st.columns([3, 1])
+    with col_inst:
+        practice_inst = st.selectbox(
+            "选择扮演的投资机构",
+            ["（手动输入）"] + inst_name_list,
+            key="practice_inst_select",
+        )
+        if practice_inst == "（手动输入）":
+            practice_inst = st.text_input("机构名称", key="practice_inst_manual", placeholder="如：迪策资本")
+
+    session_key = f"practice_session_{company_id}"
+
+    with col_start:
+        st.write("")  # 对齐间距
+        st.write("")
+        if st.button("▶️ 开始新演练", key="practice_start_btn", type="primary"):
+            _pi = (practice_inst or "").strip()
+            if not _pi:
+                st.error("请选择或填写投资机构名称。")
+            else:
+                _iid, _icanon = institution_resolve(_pi)
+                with st.spinner("AI 投资人正在准备开场问题…"):
+                    try:
+                        sess = start_practice_session(_iid, company_id, ws_path)
+                        st.session_state[session_key] = sess
+                        st.session_state[f"{session_key}_current_q"] = sess["opening_question"]
+                        st.session_state[f"{session_key}_done"] = False
+                    except Exception as ex:
+                        st.error(f"启动演练失败：{ex}")
+
+    # ── 演练进行中 ──────────────────────────────────────────────────────────────
+    if session_key not in st.session_state:
+        st.info("👆 选择机构后点击「开始新演练」。")
+        return
+
+    sess = st.session_state[session_key]
+    is_done = st.session_state.get(f"{session_key}_done", False)
+    current_q = st.session_state.get(f"{session_key}_current_q", "")
+    rounds = sess.get("rounds", [])
+
+    # ── 历史轮次回顾 ──────────────────────────────────────────────────────────
+    if rounds:
+        with st.expander(f"📜 历史问答（{len(rounds)} 轮）", expanded=False):
+            for i, r in enumerate(rounds, 1):
+                score_color = "🟢" if r["score"] >= 75 else ("🟡" if r["score"] >= 60 else "🔴")
+                st.markdown(f"**第 {i} 轮** {score_color} {r['score']}分")
+                st.markdown(f"> **投资人**：{r['question']}")
+                st.markdown(f"> **你**：{r['answer']}")
+                st.caption(f"反馈：{r['feedback']}")
+                st.divider()
+
+    if is_done:
+        # ── 会话结束：显示总结 ────────────────────────────────────────────────
+        st.success("✅ 本轮演练结束！")
+        summary = get_session_summary(sess)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("总轮数", summary["total_rounds"])
+        c2.metric("平均得分", f"{summary['avg_score']:.1f}")
+        c3.metric("弱项数量", len(summary["weak_areas"]))
+
+        if summary["weak_areas"]:
+            st.warning("🎯 **需要重点准备的问题类型：**")
+            for q in summary["weak_areas"]:
+                st.markdown(f"- {q}")
+        if summary["strong_areas"]:
+            st.success("💪 **表现较好的问题：**")
+            for q in summary["strong_areas"]:
+                st.markdown(f"- {q}")
+        return
+
+    # ── 当前问题 + 输入框 ──────────────────────────────────────────────────────
+    inst_name = sess.get("institution_profile", {}).get("canonical_name", "投资人")
+    st.markdown(f"### 💬 **{inst_name}** 提问：")
+    st.info(current_q)
+
+    ANSWER_KEY = f"{session_key}_answer_input"
+    st.text_area(
+        "你的回答",
+        key=ANSWER_KEY,
+        height=120,
+        placeholder="输入你的回答，尽量清晰、有数据支撑…",
+    )
+
+    col_submit, col_end = st.columns([2, 1])
+    with col_submit:
+        if st.button("✅ 提交回答", key=f"{session_key}_submit"):
+            answer_text = (st.session_state.get(ANSWER_KEY) or "").strip()
+            if not answer_text:
+                st.warning("请先输入回答。")
+            else:
+                with st.spinner("AI 评分中…"):
+                    try:
+                        result = evaluate_answer_and_next(
+                            sess, question=current_q, answer=answer_text
+                        )
+                        score = result["score"]
+                        feedback = result["feedback"]
+                        next_q = result["next_question"]
+                        st.session_state[session_key] = result["updated_session"]
+                        st.session_state[f"{session_key}_current_q"] = next_q
+
+                        sc_label = "🟢" if score >= 75 else ("🟡" if score >= 60 else "🔴")
+                        st.markdown(f"**{sc_label} 得分：{score} / 100**")
+                        st.markdown(f"**反馈**：{feedback}")
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"评分失败：{ex}")
+
+    with col_end:
+        if st.button("🏁 结束演练", key=f"{session_key}_end"):
+            st.session_state[f"{session_key}_done"] = True
+            st.rerun()
 
 
 def _preflight_subprocess_kwargs() -> dict:
