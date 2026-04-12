@@ -8,9 +8,9 @@
 
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
-| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V10.4**），纯净包目录名随其变化。 |
-| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。 |
-| **回归测试** | `pytest tests/` → 当前全量 **550 passed**（含 `test_asset_bridge` 15个用例）。 |
+| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V10.5**），纯净包目录名随其变化。 |
+| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。**V10.5✅**：平衡评估——AI 同步识别「表现亮点」（`positive_highlights`）；阶段一扫描质量门槛强化；审查台新增亮点编辑区；HTML 报告新增亮点展示区；finalize 按钮添加 Toast 即时反馈 + spinner + 异常日志。 |
+| **回归测试** | `pytest tests/` → 当前全量 **562 passed**（含 `test_v105_balanced_eval` 12个用例）。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 | **姊妹项目 FSS** | `D:\AI_Workspaces\AI_CangJie_FSS`（仓颉资产台账系统，GitHub: `bog5d/CangJie-Asset-Console`）。核心文件：`资产控制台主程序.py`（V4.0 主程序）、`cangjie_kimiv2.py`（轻量版）。两系统通过 `D:\AI_Workspaces\.fos_data\asset_index.json` 交换资产清单数据（FSS写入，AI Coach读取）。**改FSS代码前先读该目录的 `更新日志.md`**。 |

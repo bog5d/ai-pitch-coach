@@ -4,6 +4,30 @@
 
 ---
 
+## [V10.5] — 2026-04-13 · 平衡评估 + 报告修复版
+
+亮点识别 + 质量门槛强化 + finalize按钮Toast反馈，**562 passed**。
+
+### 新增（3 项）
+
+| # | 描述 | 位置 |
+|---|------|------|
+| 新增-1 | **表现亮点（positive_highlights）**：schema 新增字段，AI 阶段一扫描同步识别 3-5 条亮点，注入 AnalysisReport 并渲染到 HTML 报告「表现亮点」区块（评分环后、翻车卡片前） | `src/schema.py`；`src/llm_judge.py`；`src/report_builder.py` |
+| 新增-2 | **审查台亮点编辑框**：人工可查看/增补/修改 AI 识别到的亮点，锁定时写入报告 | `app.py`：`_v3_init_header_widgets` + `_v3_build_report_dict_from_widgets` + `_v3_render_single_stem_review` |
+| 新增-3 | **finalize 按钮 Toast 即时反馈**：按钮点击后立即弹出浮动通知（成功✅ / 失败❌），含 spinner 等待动效；异常同步写入日志 | `app.py`：finalize handler |
+
+### 优化（1 项）
+
+| # | 描述 | 位置 |
+|---|------|------|
+| OPT-1 | **阶段一扫描质量门槛强化**：明确禁止把正常口语化表达/自我介绍/轻微语气词列为靶点；总靶子数≤8 个，禁止凑数 | `src/llm_judge.py`：`_build_risk_scan_system_prompt` |
+
+### 测试
+
+新增 `tests/test_v105_balanced_eval.py`（12 个用例：Schema层6 / LLM管道层3 / HTML报告层3），全量 562 passed。
+
+---
+
 ## [V10.4] — 2026-04-13 · FOS 资产桥接 + 启动体验修复
 
 会前简报接入仓颉资产库，**550 passed**。

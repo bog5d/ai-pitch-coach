@@ -143,4 +143,4 @@ def test_pipeline_with_cache(tmp_path):
 
 ---
 
-*最后更新：V10.4 FOS资产桥接+env_all_ok启动自检修复；铁律一至五仍适用。*
+*最后更新：V10.5 平衡评估（positive_highlights）+阶段一质量门槛强化+finalize按钮Toast修复；铁律一至五仍适用。*
