@@ -492,6 +492,29 @@ def snippet_audio_mp3_bytes(
         return None
 
 
+def _compute_top3_and_action(cards: list[dict]) -> tuple[list[dict], str]:
+    """
+    按严重程度 + 扣分值排序，取前 3 作为 Top3 优先区。
+    action_focus：取 Top1 的改进建议前 60 字，作为「下次练这一件事」行动锚点。
+    """
+    sorted_cards = sorted(
+        cards,
+        key=lambda c: (c.get("level_order", 1), -c.get("score_deduction", 0)),
+    )
+    top3 = sorted_cards[:3]
+    action_focus = ""
+    if top3:
+        first_improvement = (top3[0].get("improvement") or "").strip()
+        # 取第一句或前 60 字
+        for sep in ["。", "；", "\n"]:
+            idx = first_improvement.find(sep)
+            if 0 < idx <= 80:
+                first_improvement = first_improvement[: idx + 1]
+                break
+        action_focus = first_improvement[:80]
+    return top3, action_focus
+
+
 def _render_html(
     report: AnalysisReport,
     cards: list[dict],
@@ -500,6 +523,7 @@ def _render_html(
     watermark_line: str = "",
     generated_footer_line: str = "",
 ) -> str:
+    top3, action_focus = _compute_top3_and_action(cards)
     env = Environment(autoescape=select_autoescape(["html", "xml"]))
     tpl = env.from_string(_HTML_TEMPLATE)
     return tpl.render(
@@ -508,6 +532,9 @@ def _render_html(
         total_score_deduction=total_score_deduction or "",
         positive_highlights=list(report.positive_highlights or []),
         cards=cards,
+        top3=top3,
+        rest_cards=len(cards) > 3,
+        action_focus=action_focus,
         watermark_line=watermark_line or "",
         generated_footer_line=generated_footer_line or "",
     )
@@ -563,14 +590,16 @@ def generate_html_report(
                 time_label = "无法对齐词索引（无音频切片）"
         else:
             original_text = "（人工增补条目：无词级时间锚，以下正文见 Tier 1 / Tier 2 / 改进建议。）"
+        # 严重程度优先级权重（用于 Top3 排序）
+        _level_order = {"严重": 0, "一般": 1, "轻微": 2}
         cards.append(
             {
                 "index": idx,
                 "risk_level": rp.risk_level,
-                "tier1": rp.tier1_general_critique,
-                "tier2": rp.tier2_qa_alignment,
+                "level_order": _level_order.get(rp.risk_level, 1),
+                "score_deduction": rp.score_deduction or 0,
+                "problem_summary": getattr(rp, "problem_summary", "") or "",
                 "improvement": rp.improvement_suggestion,
-                "deduction_reason": rp.deduction_reason or "",
                 "time_label": time_label,
                 "audio_data_uri": data_uri,
                 "has_audio": bool(data_uri),
@@ -857,6 +886,46 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             color: var(--warn);
             font-weight: 600;
         }
+        /* ── Top 3 优先区 ─────────────────────────── */
+        .top3-section { margin: 24px 0 8px; }
+        .top3-title {
+            font-size: 0.8rem; letter-spacing: 0.15em; text-transform: uppercase;
+            color: var(--severe); font-weight: 700; margin-bottom: 12px;
+        }
+        .top3-item {
+            display: flex; gap: 14px; align-items: flex-start;
+            padding: 14px 18px; border-radius: 12px;
+            background: rgba(248,113,113,0.06); border: 1px solid rgba(248,113,113,0.18);
+            margin-bottom: 10px;
+        }
+        .top3-item.medium { background: rgba(251,191,36,0.05); border-color: rgba(251,191,36,0.18); }
+        .top3-num { font-size: 1.4rem; font-weight: 800; color: rgba(248,113,113,0.5); line-height: 1.2; min-width: 28px; }
+        .top3-item.medium .top3-num { color: rgba(251,191,36,0.5); }
+        .top3-body { flex: 1; }
+        .top3-summary { font-weight: 600; font-size: 0.95rem; color: var(--text); margin-bottom: 6px; }
+        .top3-action { font-size: 0.85rem; color: var(--accent2); }
+        /* ── 问题背景 ──────────────────────────────── */
+        .problem-summary {
+            font-size: 0.88rem; color: var(--muted); margin: 0 0 12px;
+            padding: 8px 14px; border-left: 3px solid rgba(255,255,255,0.1);
+        }
+        /* ── 行动锚点 ──────────────────────────────── */
+        .action-anchor {
+            margin-top: 36px; padding: 24px 28px; border-radius: var(--radius);
+            background: linear-gradient(135deg, rgba(94,234,212,0.08), rgba(124,156,255,0.06));
+            border: 1px solid rgba(94,234,212,0.2);
+        }
+        .action-anchor-title {
+            font-size: 0.78rem; letter-spacing: 0.15em; text-transform: uppercase;
+            color: var(--accent2); font-weight: 700; margin-bottom: 10px;
+        }
+        .action-anchor-text { font-size: 1.05rem; font-weight: 600; color: var(--text); }
+        /* ── 其余片段区 ───────────────────────────── */
+        .rest-section-title {
+            font-size: 0.78rem; letter-spacing: 0.12em; text-transform: uppercase;
+            color: var(--muted); font-weight: 600; margin: 28px 0 12px;
+            padding-bottom: 8px; border-bottom: 1px solid var(--line);
+        }
     </style>
 </head>
 <body>
@@ -883,13 +952,13 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                 </div>
                 <div class="score-meta">
                     <div class="big">综合得分 {{ total_score }} / 100</div>
-                    <div class="hint">以下每个翻车片段均可独立试听（Base64 内嵌 MP3；开头约 1.5s、结尾约 8s 非对称缓冲）；人工条目无切片。</div>
-                    <div class="score-deduction"><strong>总分扣分说明</strong><br/>{{ total_score_deduction or "（未填写）" }}</div>
+                    <div class="hint">以下每个翻车片段均可独立试听（Base64 内嵌 MP3）；人工条目无切片。</div>
                 </div>
             </div>
+
         {% if positive_highlights %}
         <div class="highlights-section">
-            <p class="highlights-title">✅ 表现亮点</p>
+            <p class="highlights-title">✅ 做得好的地方</p>
             <ul class="highlights-list">
                 {% for h in positive_highlights %}
                 <li>{{ h }}</li>
@@ -897,7 +966,32 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             </ul>
         </div>
         {% endif %}
+
+        {% if top3 %}
+        <div class="top3-section">
+            <p class="top3-title">⚠ 本次最需要改进的 {{ top3|length }} 个问题</p>
+            {% for t in top3 %}
+            <div class="top3-item {% if t.risk_level == '一般' %}medium{% endif %}">
+                <div class="top3-num">{{ loop.index }}</div>
+                <div class="top3-body">
+                    <div class="top3-summary">
+                        {% if t.risk_level == "严重" %}<span style="color:var(--severe)">●</span>{% elif t.risk_level == "一般" %}<span style="color:var(--warn)">●</span>{% else %}<span style="color:var(--mild)">●</span>{% endif %}
+                        {{ t.problem_summary or t.risk_level + " 问题" }}
+                    </div>
+                    {% if t.improvement %}
+                    <div class="top3-action">→ {{ t.improvement[:80] }}{% if t.improvement|length > 80 %}…{% endif %}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
         </header>
+
+        {% if rest_cards %}
+        <p class="rest-section-title">全部翻车片段（{{ cards|length }} 条）</p>
+        {% endif %}
 
         {% for c in cards %}
         <article class="card">
@@ -916,22 +1010,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
                 <span class="time-pill">{{ c.time_label }}</span>
             </div>
 
-            <p class="block-title">Tier 1 · 全球顶尖 VC 视角</p>
-            <div class="block-body tier1">{{ c.tier1 }}</div>
-
-            <p class="block-title">Tier 2 · 内部 QA 对齐视角</p>
-            <div class="block-body tier2">{{ c.tier2 }}</div>
+            {% if c.problem_summary %}
+            <p class="problem-summary">{{ c.problem_summary }}</p>
+            {% endif %}
 
             <div class="improve-wrap">
                 <p class="block-title">改进建议</p>
                 <p>{{ c.improvement }}</p>
             </div>
 
-            <p class="block-title">扣分 / QA 口径对照</p>
-            <div class="block-body tier2 deduction-reason">{{ c.deduction_reason or "（未填写）" }}</div>
-
             <div class="player">
-                <span>翻车片段试听（内嵌 Base64 · MP3）</span>
+                <span>片段试听（内嵌 Base64 · MP3）</span>
                 {% if c.has_audio %}
                 <audio controls preload="metadata" src="{{ c.audio_data_uri }}"></audio>
                 {% elif c.audio_extraction_failed %}
@@ -947,6 +1036,13 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             </div>
         </article>
         {% endfor %}
+
+        {% if action_focus %}
+        <div class="action-anchor">
+            <p class="action-anchor-title">📌 下次见面前重点练这一件事</p>
+            <p class="action-anchor-text">{{ action_focus }}</p>
+        </div>
+        {% endif %}
 
         <footer>
             {% if watermark_line %}

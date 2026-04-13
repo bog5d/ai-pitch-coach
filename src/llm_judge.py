@@ -658,7 +658,12 @@ def _build_risk_scan_system_prompt(
 {_hist_block}
 <TASK>
 1. 推断 scene_analysis（场景类型与说话人角色关系）。
-2. 【找靶子】列出 risk targets：每项含 start_word_index、end_word_index、problem_description（简练）、risk_type（类型标签）。
+2. 【找靶子】列出 risk targets：每项含 start_word_index、end_word_index、problem_description、risk_type（类型标签）。
+   - **problem_description 格式要求（极重要）**：30字以内，事实导向，写"发言人说了什么/做了什么+矛盾在哪"。
+     ✅ 正确示例："高管透露军方客户内部排名细节并提及非公平竞争行为"
+     ✅ 正确示例："被追问数据来源时逻辑断裂，前后口径不一致"
+     ❌ 禁止写后果："削弱了投资人对市场确定性的信心"（这是结论，不是事实）
+     ❌ 禁止写分析："暴露了公司内部管理口径不统一的问题"（这是推断，不是事实）
    - 板子打在【发言人】应答上；勿把投资人的质问当成发言人的 risk。
    - 索引必须来自转写中出现的 [index]；单靶点覆盖时长宜在约 45–60 秒量级。
    - **质量门槛（极重要）**：只标记具有实质性逻辑问题、数据矛盾、口径偏离、沟通失误的片段。
@@ -712,12 +717,17 @@ def _build_deep_single_risk_system_prompt(
 {_company_bg_block}
 {_hist_block}
 <TASK>
-1. improvement_suggestion 必须**专业、一针见血**，给出发言人可直接复用的应答结构或示例句式（遵守私募合规，禁止保本保收益等表述）。
-2. 必须严格执行量化扣分：填写 score_deduction；deduction_reason 说明扣分依据。
-3. start_word_index / end_word_index 必须与 user 给出的靶点范围一致（系统会再次强制校验）。
-4. is_manual_entry=false，needs_refinement=false，refinement_note=""。
-5. original_text 须与该索引范围的实录一致；禁止抄 QA 冒充。
-6. 仅输出一个 RiskPoint JSON 对象。
+1. **problem_summary（极重要）**：30字以内，事实导向，还原"发言人具体说了什么 + 矛盾点"。
+   写"发生了什么"，不写"会导致什么后果"。
+   ✅ "高管透露军方客户排名细节并提及非公平竞争行为"
+   ✅ "被追问验收周期时承认内部流程脱节，未给出解决方案"
+   ❌ "削弱投资人对市场确定性的信心"（后果，禁止）
+2. improvement_suggestion 必须**专业、一针见血**，给出发言人可直接复用的应答结构或示例句式（遵守私募合规，禁止保本保收益等表述）。
+3. 必须严格执行量化扣分：填写 score_deduction；deduction_reason 说明扣分依据。
+4. start_word_index / end_word_index 必须与 user 给出的靶点范围一致（系统会再次强制校验）。
+5. is_manual_entry=false，needs_refinement=false，refinement_note=""。
+6. original_text 须与该索引范围的实录一致；禁止抄 QA 冒充。
+7. 仅输出一个 RiskPoint JSON 对象。
 </TASK>
 <JSON_SCHEMA>
 {schema_str}

@@ -1090,11 +1090,12 @@ def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
         if refine_pending_key in st.session_state:
             refined: dict = st.session_state.pop(refine_pending_key)
             # 删除旧 widget-managed keys，强制下次渲染以新值重新初始化
-            for suffix in ("_lvl", "_t1", "_t2", "_im", "_ded", "_ort",
+            for suffix in ("_lvl", "_ps", "_t1", "_t2", "_im", "_ded", "_ort",
                            "_needs_refine", "_refine_note"):
                 st.session_state.pop(f"{base}{suffix}", None)
             # 注入精炼后的值
             st.session_state[f"{base}_lvl"] = refined.get("risk_level", rp.get("risk_level", "一般"))
+            st.session_state[f"{base}_ps"] = refined.get("problem_summary", rp.get("problem_summary", ""))
             st.session_state[f"{base}_t1"] = refined.get("tier1_general_critique", "")
             st.session_state[f"{base}_t2"] = refined.get("tier2_qa_alignment", "")
             st.session_state[f"{base}_im"] = refined.get("improvement_suggestion", "")
@@ -1113,6 +1114,8 @@ def _v3_init_risk_widgets(stem: str, draft: dict) -> None:
         # ── 正常初始化（仅当 key 尚未被 widget 托管时赋初值）──
         if f"{base}_lvl" not in st.session_state:
             st.session_state[f"{base}_lvl"] = rp.get("risk_level", "一般")
+        if f"{base}_ps" not in st.session_state:
+            st.session_state[f"{base}_ps"] = rp.get("problem_summary", "")
         if f"{base}_im" not in st.session_state:
             st.session_state[f"{base}_im"] = rp.get("improvement_suggestion", "")
         if f"{base}_ort" not in st.session_state:
@@ -1156,6 +1159,10 @@ def _v3_build_report_dict_from_widgets(stem: str) -> dict:
         rps_out.append(
             {
                 "risk_level": st.session_state.get(f"{base}_lvl", rp.get("risk_level", "一般")),
+                # problem_summary 可编辑，从 widget session_state 读取
+                "problem_summary": st.session_state.get(
+                    f"{base}_ps", rp.get("problem_summary", "")
+                ),
                 # tier1/tier2/deduction 只读，直接从 draft 数据读取（不经 widget session_state）
                 "tier1_general_critique": rp.get("tier1_general_critique", ""),
                 "tier2_qa_alignment": rp.get("tier2_qa_alignment", ""),
@@ -1357,15 +1364,13 @@ def _v3_render_single_stem_review(stem: str) -> None:
                 key=f"v3rp_{stem}_{rid}_lvl",
             )
 
-            # 问题背景：取 tier1 首句（读 session_state，回退到 draft dict）
-            # 用 or 兜底：session_state[_t1] 为 "" 时仍能读到原始 rp 的数据
-            _t1_key = f"v3rp_{stem}_{rid}_t1"
-            tier1_raw = st.session_state.get(_t1_key) or rp.get("tier1_general_critique", "")
-            summary = _extract_tier1_summary(tier1_raw)
-            if summary:
-                st.markdown(f"**问题背景**：{summary}")
-            else:
-                st.caption("问题背景：（待 AI 生成）")
+            # 问题背景：可编辑文本（problem_summary 字段，事实导向 30 字内）
+            st.text_area(
+                "问题背景（可编辑）",
+                key=f"v3rp_{stem}_{rid}_ps",
+                height=68,
+                help="事实导向：发言人说了什么 + 矛盾点在哪，30字内。由 AI 自动填写，可手动修正。",
+            )
 
             st.text_area(
                 "改进建议",

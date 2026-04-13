@@ -238,7 +238,7 @@ class TestHtmlHighlights:
         html = self._gen_html(report)
         assert "回答结构清晰" in html
         assert "引用了精确数字" in html
-        assert "表现亮点" in html
+        assert "做得好的地方" in html  # V10.4：标题改为"做得好的地方"
 
     def test_no_highlights_section_when_empty(self):
         """无亮点时 HTML 中不应出现亮点 div 渲染块（CSS 类定义仍存在于 style）。"""
@@ -246,7 +246,7 @@ class TestHtmlHighlights:
         html = self._gen_html(report)
         # 当 highlights 为空时，Jinja2 的 {% if %} 块不渲染，div 元素不出现
         assert '<div class="highlights-section">' not in html
-        assert "表现亮点" not in html
+        assert "做得好的地方" not in html
 
     def test_highlights_escaped_safely(self):
         """亮点文本中的 HTML 特殊字符应被安全转义。"""

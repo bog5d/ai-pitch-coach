@@ -53,6 +53,14 @@ class MagicRefinementResult(BaseModel):
 
 class RiskPoint(BaseModel):
     risk_level: Literal["严重", "一般", "轻微"] = Field(..., description="踩坑严重程度")
+    problem_summary: str = Field(
+        default="",
+        description=(
+            "【事实导向】30字以内：发言人具体说了什么 + 矛盾点在哪。"
+            "写'说了什么'，不写'导致什么后果'。"
+            "例：'高管透露军方客户内部排名细节并提及非公平竞争行为'"
+        ),
+    )
     tier1_general_critique: str = Field(..., description="第一层(顶尖视角): 商业逻辑致命伤和隐患")
     tier2_qa_alignment: str = Field(..., description="第二层(QA对齐): 是否违背公司口径或QA需更新")
     improvement_suggestion: str = Field(
