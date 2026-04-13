@@ -141,6 +141,19 @@ def export_analytics(
             ),
             "stage1_truncated": _is_stage1_truncated(report),
             "risk_type_counts": _build_risk_type_counts(report),
+            # V10.6：投资人匹配引擎所需字段（与 investor_matcher.py 对齐）
+            # high_freq_topics = 本次访谈中机构反复探讨的主题（来自 risk_type 标签）
+            "high_freq_topics": list(_build_risk_type_counts(report).keys()),
+            # focus_keywords = 机构身份关键词（机构ID + 投资人姓名）
+            "focus_keywords": [
+                kw for kw in [
+                    (ctx.get("institution_id") or "").strip(),
+                    (ctx.get("investor_name") or "").strip(),
+                ]
+                if kw
+            ],
+            # preferred_stages 由机构画像系统动态聚合，analytics 层暂置空
+            "preferred_stages": [],
         }
 
         serialized = json.dumps(payload, ensure_ascii=False, indent=2)

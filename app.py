@@ -1967,6 +1967,194 @@ def _ping_deepseek(api_key: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
+# ── FOS Sprint 6：投资人匹配页面 ──────────────────────────────────────────────
+def _render_investor_matcher_page(company_id: str, workspace: str) -> None:
+    """FOS Sprint 6 — 投资人匹配引擎页面。"""
+    try:
+        from investor_matcher import (
+            CompanySnapshot, match_institutions, format_match_report
+        )
+    except ImportError:
+        st.error("investor_matcher 模块未加载，请确认 src/investor_matcher.py 存在。")
+        return
+
+    st.header("🎯 投资人匹配")
+    st.caption("基于已积累的机构画像，为目标公司推荐最匹配的投资机构。数据越积累越准。")
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        company_name = st.text_input("被服务公司名称", value=company_id or "", key="matcher_company_name")
+        stage = st.selectbox("当前融资阶段", ["", "天使轮", "Pre-A", "A轮", "A+轮", "B轮", "B+轮", "C轮", "D轮", "上市前", "战略轮"], key="matcher_stage")
+        revenue = st.number_input("营收（万元，0=未知）", min_value=0, value=0, key="matcher_revenue")
+    with col2:
+        industry_tags_raw = st.text_area("行业标签（逗号分隔）", placeholder="如：军工电子, AI, RTOS, 低空经济", key="matcher_industry", height=80)
+        model_tags_raw = st.text_area("商业模式标签（逗号分隔）", placeholder="如：ToB, 硬科技, 嵌入式", key="matcher_model", height=80)
+
+    top_n = st.slider("最多展示几家机构", 3, 20, 10, key="matcher_top_n")
+
+    if st.button("🔍 开始匹配", type="primary", key="btn_run_matcher"):
+        industry_tags = [t.strip() for t in industry_tags_raw.replace("，", ",").split(",") if t.strip()]
+        model_tags = [t.strip() for t in model_tags_raw.replace("，", ",").split(",") if t.strip()]
+
+        if not company_name:
+            st.warning("请填写公司名称。")
+            return
+
+        snapshot = CompanySnapshot(
+            company_name=company_name,
+            industry_tags=industry_tags,
+            stage=stage,
+            revenue_rmb_wan=int(revenue),
+            model_tags=model_tags,
+        )
+
+        with st.spinner("正在检索机构画像数据…"):
+            results = match_institutions(snapshot, workspace_root=workspace, top_n=top_n)
+
+        if not results:
+            st.info("暂无匹配数据。请先完成至少一次机构访谈以积累画像（系统会自动从历史 analytics 文件中提取）。")
+            return
+
+        st.success(f"找到 {len(results)} 家潜在匹配机构")
+        for i, r in enumerate(results, 1):
+                with st.expander(f"**{i}. {r.institution_name}** — {r.score}分", expanded=(i <= 3)):
+                col_s, col_d = st.columns([1, 3])
+                with col_s:
+                    st.metric("匹配分", f"{r.score}/100")
+                    if r.stage_match:
+                        st.success("✅ 阶段吻合")
+                    st.caption(f"访谈记录：{r.session_count} 次")
+                with col_d:
+                    st.write(f"**匹配理由**：{r.match_reason}")
+                    if r.matched_keywords:
+                        st.write(f"**命中关键词**：{', '.join(r.matched_keywords[:8])}")
+
+
+# ── FOS Sprint 6：融资 Pipeline CRM 页面 ─────────────────────────────────────
+def _render_pipeline_crm_page(company_id: str, workspace: str) -> None:
+    """FOS Sprint 6 — 融资过程 CRM 页面。"""
+    try:
+        from pipeline_tracker import (
+            PipelineStore, PipelineRecord, PipelineStatus,
+            get_default_store, format_pipeline_overview,
+        )
+    except ImportError:
+        st.error("pipeline_tracker 模块未加载，请确认 src/pipeline_tracker.py 存在。")
+        return
+
+    store = get_default_store(workspace)
+
+    st.header("📋 融资 Pipeline")
+    st.caption("追踪每家机构的接触进度，管理完整融资漏斗。")
+
+    # 筛选器
+    filter_company = st.text_input("按项目名称筛选（留空显示全部）", value=company_id or "", key="pipeline_filter_company")
+    records = store.list_records(company_id=filter_company.strip() or None)
+
+    # 统计看板
+    if records:
+        summary = store.get_summary(company_id=filter_company.strip() or None)
+        active_statuses = [PipelineStatus.INITIAL_CONTACT, PipelineStatus.NDA_SIGNED,
+                           PipelineStatus.MATERIALS_SENT, PipelineStatus.DD_IN_PROGRESS,
+                           PipelineStatus.INTERVIEW_STAGE, PipelineStatus.TS_NEGOTIATION]
+        cols = st.columns(len(active_statuses))
+        for col, status in zip(cols, active_statuses):
+            col.metric(status.value, summary.get(status, 0))
+
+        won = summary.get(PipelineStatus.CLOSED_WON, 0)
+        lost = summary.get(PipelineStatus.CLOSED_LOST, 0)
+        if won or lost:
+            st.caption(f"🏆 关单成功：{won}  ❌ 放弃：{lost}")
+
+    st.divider()
+
+    # 新建记录
+    with st.expander("➕ 新建 Pipeline 记录", expanded=False):
+        c1, c2, c3 = st.columns(3)
+        new_inst_name = c1.text_input("机构名称", key="new_pipe_inst")
+        new_inst_id = c2.text_input("机构ID（英文）", key="new_pipe_inst_id")
+        new_company = c3.text_input("项目名称", value=company_id or "", key="new_pipe_company")
+        new_status = st.selectbox("初始状态", [s.value for s in PipelineStatus], key="new_pipe_status")
+        new_note = st.text_input("初始备注（可选）", key="new_pipe_note")
+        if st.button("💾 创建记录", key="btn_create_pipeline"):
+            if not new_inst_name or not new_company:
+                st.warning("请填写机构名称和项目名称。")
+            else:
+                import time as _time
+                rid = f"{new_inst_id or new_inst_name}_{new_company}_{int(_time.time())}"
+                rec = PipelineRecord(
+                    record_id=rid,
+                    institution_id=new_inst_id or new_inst_name,
+                    institution_name=new_inst_name,
+                    company_id=new_company,
+                    company_name=new_company,
+                    status=PipelineStatus(new_status),
+                )
+                if new_note:
+                    rec.add_event(new_note, "创建记录")
+                store.save(rec)
+                st.toast(f"✅ 已创建：{new_inst_name} × {new_company}", icon="✅")
+                st.rerun()
+
+    # 记录列表
+    if not records:
+        st.info("暂无 Pipeline 记录。点击上方「新建」开始追踪。")
+        return
+
+    status_emoji = {
+        PipelineStatus.INITIAL_CONTACT: "📞", PipelineStatus.NDA_SIGNED: "📝",
+        PipelineStatus.MATERIALS_SENT: "📦", PipelineStatus.DD_IN_PROGRESS: "🔍",
+        PipelineStatus.INTERVIEW_STAGE: "🎙️", PipelineStatus.TS_NEGOTIATION: "💼",
+        PipelineStatus.CLOSED_WON: "🏆", PipelineStatus.CLOSED_LOST: "❌",
+    }
+
+    for rec in records:
+        emoji = status_emoji.get(rec.status, "•")
+        last_date = rec.timeline[-1].date if rec.timeline else "—"
+        with st.expander(
+            f"{emoji} **{rec.institution_name}** × {rec.company_name}  |  {rec.status.value}  |  {last_date}",
+            expanded=False
+        ):
+            c_l, c_r = st.columns([2, 1])
+            with c_l:
+                # 状态更新
+                new_s = st.selectbox(
+                    "更新状态",
+                    [s.value for s in PipelineStatus],
+                    index=[s.value for s in PipelineStatus].index(rec.status.value),
+                    key=f"pipe_status_{rec.record_id}",
+                )
+                note_input = st.text_input("备注（更新状态时写入时间线）", key=f"pipe_note_{rec.record_id}")
+                if st.button("💾 保存", key=f"pipe_save_{rec.record_id}"):
+                    new_status_enum = PipelineStatus(new_s)
+                    if new_status_enum != rec.status:
+                        rec.update_status(new_status_enum, note=note_input)
+                    elif note_input:
+                        rec.add_event(note_input)
+                    store.save(rec)
+                    st.toast("✅ 已保存", icon="✅")
+                    st.rerun()
+
+                next_act = st.text_input("下一步行动", value=rec.next_action, key=f"pipe_next_{rec.record_id}")
+                if st.button("📌 更新下一步", key=f"pipe_next_save_{rec.record_id}"):
+                    rec.next_action = next_act
+                    store.save(rec)
+                    st.rerun()
+
+            with c_r:
+                st.caption("📅 时间线")
+                for entry in reversed(rec.timeline[-8:]):
+                    st.caption(f"`{entry.date}` {entry.action} — {entry.note}")
+
+                if rec.linked_interviews:
+                    st.caption("🎙️ 关联访谈")
+                    for iv in rec.linked_interviews:
+                        st.caption(f"  • {iv}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI 路演与访谈复盘系统",
@@ -2111,6 +2299,12 @@ def main() -> None:
         st.divider()
         if st.button("📊 高管数字记忆库", key="btn_v86_open_dash", use_container_width=True):
             st.session_state["v86_dashboard_mode"] = True
+            st.rerun()
+        if st.button("🎯 投资人匹配", key="btn_investor_matcher", use_container_width=True):
+            st.session_state["fos_page"] = "investor_matcher"
+            st.rerun()
+        if st.button("📋 融资Pipeline", key="btn_pipeline_crm", use_container_width=True):
+            st.session_state["fos_page"] = "pipeline_crm"
             st.rerun()
         # ── 公司档案选择器结束 ────────────────────────────────────────────────────
 
@@ -2314,6 +2508,23 @@ def main() -> None:
             st.rerun()
         _v86_render_executive_dashboard(selected_company_id, workspace_root=workspace)
         st.stop()
+
+    # ── FOS Sprint 6：新功能页面路由（不影响任何现有逻辑）────────────────────
+    _fos_page = st.session_state.get("fos_page", "")
+    if _fos_page == "investor_matcher":
+        if st.button("⬅️ 返回主控制台", key="btn_matcher_back"):
+            st.session_state["fos_page"] = ""
+            st.rerun()
+        _render_investor_matcher_page(selected_company_id, workspace)
+        st.stop()
+
+    if _fos_page == "pipeline_crm":
+        if st.button("⬅️ 返回主控制台", key="btn_pipeline_back"):
+            st.session_state["fos_page"] = ""
+            st.rerun()
+        _render_pipeline_crm_page(selected_company_id, workspace)
+        st.stop()
+    # ─────────────────────────────────────────────────────────────────────────
 
     if not st.session_state.get("env_all_ok", False):
         st.warning(

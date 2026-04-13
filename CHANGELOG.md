@@ -4,6 +4,26 @@
 
 ---
 
+## [V10.6] — 2026-04-13 · 稳定性加固与匹配引擎修复版
+
+全面审计后修复 5 项 Bug，**605 passed**。无新功能，向下兼容。
+
+### 修复（5 项）
+
+| # | 描述 | 位置 |
+|---|------|------|
+| Fix-1 | **投资人匹配引擎字段空转修复**：`analytics_exporter` 补写 `high_freq_topics`（来自 `risk_type_counts` 键）/ `focus_keywords`（机构ID+投资人姓名）/ `preferred_stages` 三个字段，使 `investor_matcher` 真正能读到匹配信号 | `src/analytics_exporter.py` |
+| Fix-2 | **investor_matcher 匹配增强**：从 analytics 的 `company_id` 字段提取2字以上词片段，扩充机构关键词库 | `src/investor_matcher.py` |
+| Fix-3 | **Pipeline `load()` ValueError 容错**：加入 `ValueError` 到捕获异常列表，状态值损坏时静默返回 None 而非崩溃 | `src/pipeline_tracker.py` |
+| Fix-4 | **Pipeline `save()` tmp 清理路径修正**：异常处理块从 `Path(str(target)+".tmp")` 改为直接引用 `tmp` 变量 | `src/pipeline_tracker.py` |
+| Fix-5 | **Pipeline CRM UX 修复**：`st.success`+`st.rerun()` 改为 `st.toast`+`st.rerun()`，保存提示可见 | `app.py` |
+
+### 测试
+
+新增 `tests/test_v106_stability.py`（13 个用例：analytics导出3 / Pipeline容错5 / 匹配引擎5），全量 605 passed。
+
+---
+
 ## [V10.5] — 2026-04-13 · 平衡评估 + 报告修复版
 
 亮点识别 + 质量门槛强化 + finalize按钮Toast反馈，**562 passed**。
