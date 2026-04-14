@@ -162,7 +162,7 @@ def _v86_harvest_finalize_if_needed(stem: str, payload: dict) -> int:
 
 
 def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -> None:
-    """V10.1 复盘数据中台：4-Tab 架构（会话总览/个人成长/行业基准/AI纠偏库）。"""
+    """V10.1 复盘数据中台：4-Tab 架构（会话总览/个人成长/内部对标池/AI纠偏库）。"""
     st.markdown("## 📂 复盘数据中台")
     if not company_id or company_id == "__new__":
         st.warning("请先在侧栏选择项目档案后再查看数据中台。")
@@ -173,7 +173,7 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 会话总览",
         "👤 个人成长",
-        "🌐 行业基准",
+        "🌐 内部对标池",
         "🧠 AI纠偏库",
         "🏦 机构画像",
         "🎯 会前演练",
@@ -194,7 +194,7 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
         _render_personal_growth_section(company_id, workspace_root, pairs)
 
     # ════════════════════════════════════════════════
-    # Tab 3：行业基准 — 匿名跨项目对比
+    # Tab 3：内部对标池 — 匿名跨项目对比
     # ════════════════════════════════════════════════
     with tab3:
         _render_benchmark_section(workspace_root)
@@ -232,35 +232,12 @@ def _render_session_overview(company_id: str, ws_path: Path) -> None:
     locked = sum(1 for s in items if s.get("status") == "locked")
     avg_score = round(sum(s.get("total_score", 0) for s in items) / total, 1) if total else 0.0
 
-    # V10.3 P3.1 融资成功率预测
-    _pred_prob = None
-    _pred_signal = "neutral"
-    try:
-        from outcome_predictor import predict_success_probability
-        _pred = predict_success_probability(items)
-        _pred_prob = _pred["probability"]
-        _pred_signal = _pred["signal"]
-    except Exception:
-        pass
-
     with st.container(border=True):
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("总复盘场次", total, help="包含 AI 初稿（草稿）和已锁定导出的场次")
         c2.metric("已锁定场次", locked)
         c3.metric("覆盖人数", len(people))
         c4.metric("项目均分", f"{avg_score:.1f}" if total else "—")
-        if _pred_prob is not None:
-            _signal_icons = {
-                "strong_positive": "🟢⬆️", "positive": "🟢",
-                "neutral": "🟡", "negative": "🔴", "strong_negative": "🔴⬇️",
-            }
-            c5.metric(
-                "融资成功预测",
-                f"{_pred_prob*100:.0f}%",
-                help=f"基于历史路演数据的启发式预测，仅供参考。信号：{_signal_icons.get(_pred_signal, '')}",
-            )
-        else:
-            c5.metric("融资成功预测", "—", help="暂无足够数据")
 
     if total == 0:
         st.info(
@@ -590,7 +567,7 @@ def _render_personal_growth_section(
         r=bm_vals + [bm_vals[0]],
         theta=dims + [dims[0]],
         fill="toself",
-        name="行业基准",
+        name="内部对标池",
         line_color="#f59e0b",
         fillcolor="rgba(245,158,11,0.1)",
         line_dash="dash",
@@ -640,11 +617,11 @@ def _render_personal_growth_section(
 
 
 def _render_benchmark_section(workspace_root: str) -> None:
-    """V10.0：扫描 workspace 下所有 *_analytics.json，生成匿名行业基准对比看板。"""
+    """V10.0：扫描 workspace 下所有 *_analytics.json，生成匿名内部对标池看板。"""
     import plotly.express as px
 
     st.divider()
-    st.subheader("📊 行业基准对比（全部公司匿名聚合）")
+    st.subheader("📊 内部对标池（全部公司匿名聚合）")
 
     ws_path = Path((workspace_root or "").strip() or str(get_writable_app_root()))
     with st.spinner("扫描历史 analytics 数据…"):
@@ -655,6 +632,8 @@ def _render_benchmark_section(workspace_root: str) -> None:
     if n == 0:
         st.info("暂无 analytics 数据。完成至少一次「锁定导出」后，行业基准数据将自动积累。")
         return
+    if n < 10:
+        st.warning(f"当前样本量较小（N={n}），对标结论仅供参考。")
 
     # ── KPI 卡片 ────────────────────────────────────────────────────────────
     k1, k2, k3, k4 = st.columns(4)
@@ -865,7 +844,9 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
     """V10.3 P2.1 Tab 6：会前演练 — AI 扮投资人，问答评分。"""
     try:
         from practice_engine import (
+            build_role_opening_hint,
             evaluate_answer_and_next,
+            get_practice_role_templates,
             get_session_summary,
             start_practice_session,
         )
@@ -892,6 +873,20 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
         if practice_inst == "（手动输入）":
             practice_inst = st.text_input("机构名称", key="practice_inst_manual", placeholder="如：迪策资本")
 
+        role_templates = get_practice_role_templates()
+        role_options = list(role_templates.keys())
+        practice_role = st.selectbox(
+            "投资人角色模板（先做 3 类高频）",
+            options=role_options,
+            key="practice_role_template",
+        )
+        st.caption(f"角色风格：{role_templates.get(practice_role, '')}")
+        practice_role_custom = st.text_input(
+            "附加追问偏好（选填）",
+            key="practice_role_custom_hint",
+            placeholder="例如：连续追问现金流与续费率",
+        )
+
     session_key = f"practice_session_{company_id}"
 
     with col_start:
@@ -903,9 +898,20 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
                 st.error("请选择或填写投资机构名称。")
             else:
                 _iid, _icanon = institution_resolve(_pi)
+                opening_hint = build_role_opening_hint(
+                    practice_role,
+                    custom_hint=(practice_role_custom or "").strip(),
+                )
                 with st.spinner("AI 投资人正在准备开场问题…"):
                     try:
-                        sess = start_practice_session(_iid, company_id, ws_path)
+                        sess = start_practice_session(
+                            _iid,
+                            company_id,
+                            ws_path,
+                            opening_hint=opening_hint,
+                        )
+                        sess["role_template"] = practice_role
+                        sess["role_custom_hint"] = (practice_role_custom or "").strip()
                         st.session_state[session_key] = sess
                         st.session_state[f"{session_key}_current_q"] = sess["opening_question"]
                         st.session_state[f"{session_key}_done"] = False
@@ -954,6 +960,9 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
 
     # ── 当前问题 + 输入框 ──────────────────────────────────────────────────────
     inst_name = sess.get("institution_profile", {}).get("canonical_name", "投资人")
+    role_template = (sess.get("role_template") or "").strip()
+    if role_template:
+        st.caption(f"当前演练角色：{role_template}")
     st.markdown(f"### 💬 **{inst_name}** 提问：")
     st.info(current_q)
 
@@ -1553,7 +1562,7 @@ def _v3_render_single_stem_review(stem: str) -> None:
                             st.error(f"AI 润色失败：{ex!s}")
 
     # ── V10.3 P1.2 融资结果记录（锁定前可选填） ─────────────────────────────────
-    with st.expander("📊 本次会谈融资进展（可选，锁定后写入数据飞轮）", expanded=False):
+    with st.expander("📊 本次会谈融资进展（可选）", expanded=False):
         _outcome_key = f"fundraising_outcome_{stem}"
         _amount_key  = f"fundraising_amount_{stem}"
         _val_key     = f"fundraising_valuation_{stem}"
@@ -2036,6 +2045,7 @@ def _render_pipeline_crm_page(company_id: str, workspace: str) -> None:
     try:
         from pipeline_tracker import (
             PipelineStore, PipelineRecord, PipelineStatus,
+            FUNNEL_STAGES,
             get_default_store, format_pipeline_overview,
         )
     except ImportError:
@@ -2053,16 +2063,15 @@ def _render_pipeline_crm_page(company_id: str, workspace: str) -> None:
 
     # 统计看板
     if records:
-        summary = store.get_summary(company_id=filter_company.strip() or None)
-        active_statuses = [PipelineStatus.INITIAL_CONTACT, PipelineStatus.NDA_SIGNED,
-                           PipelineStatus.MATERIALS_SENT, PipelineStatus.DD_IN_PROGRESS,
-                           PipelineStatus.INTERVIEW_STAGE, PipelineStatus.TS_NEGOTIATION]
+        summary = store.get_funnel_summary(company_id=filter_company.strip() or None)
+        active_statuses = FUNNEL_STAGES
         cols = st.columns(len(active_statuses))
         for col, status in zip(cols, active_statuses):
             col.metric(status.value, summary.get(status, 0))
 
-        won = summary.get(PipelineStatus.CLOSED_WON, 0)
-        lost = summary.get(PipelineStatus.CLOSED_LOST, 0)
+        closed_summary = store.get_summary(company_id=filter_company.strip() or None)
+        won = closed_summary.get(PipelineStatus.CLOSED_WON, 0)
+        lost = closed_summary.get(PipelineStatus.CLOSED_LOST, 0)
         if won or lost:
             st.caption(f"🏆 关单成功：{won}  ❌ 放弃：{lost}")
 

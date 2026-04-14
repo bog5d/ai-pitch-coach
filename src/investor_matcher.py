@@ -93,7 +93,19 @@ def build_institution_profile_from_analytics(records: list[dict]) -> Optional[di
     # 取第一条的基础信息
     base = records[0]
     institution_id = (base.get("institution_id") or "").strip()
-    institution_name = (base.get("institution_name") or institution_id).strip()
+    institution_name = ""
+    for rec in records:
+        # 优先读取人类友好的机构名；缺失时回退 canonical，再回退到 id。
+        candidate = (
+            rec.get("institution_name")
+            or rec.get("institution_canonical")
+            or ""
+        ).strip()
+        if candidate:
+            institution_name = candidate
+            break
+    if not institution_name:
+        institution_name = institution_id
 
     # 合并所有关键词（去重）
     all_keywords: set[str] = set()
