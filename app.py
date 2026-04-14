@@ -2017,7 +2017,7 @@ def _render_investor_matcher_page(company_id: str, workspace: str) -> None:
 
         st.success(f"找到 {len(results)} 家潜在匹配机构")
         for i, r in enumerate(results, 1):
-                with st.expander(f"**{i}. {r.institution_name}** — {r.score}分", expanded=(i <= 3)):
+            with st.expander(f"**{i}. {r.institution_name}** — {r.score}分", expanded=(i <= 3)):
                 col_s, col_d = st.columns([1, 3])
                 with col_s:
                     st.metric("匹配分", f"{r.score}/100")

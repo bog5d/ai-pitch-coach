@@ -143,4 +143,4 @@ def test_pipeline_with_cache(tmp_path):
 
 ---
 
-*最后更新：V10.6 稳定性五项修复（analytics字段补写、Pipeline状态容错、投资人匹配增强、tmp清理路径修正、Pipeline CRM Toast修复）；铁律一至五仍适用。*
+*最后更新：V10.6.1 修复投资人匹配结果展示 IndentationError（expander内col布局缩进错误）；铁律一至五仍适用。*
