@@ -36,6 +36,44 @@ MAX_HISTORY_TURNS = 20
 # 评分低于此分数视为「弱项」，归入 summary.weak_areas
 _WEAK_SCORE_THRESHOLD = 60
 
+# 角色模板（P3 第一阶段：先交付 CEO/CFO/CTO 三类高频场景）
+_ROLE_TEMPLATE_HINTS: dict[str, str] = {
+    "CEO（战略增长）": (
+        "你是增长导向型投资人，重点关注：市场空间、增长路径、竞争格局、"
+        "战略节奏与组织能力。问题应优先验证公司能否持续放大。"
+    ),
+    "CFO（财务审慎）": (
+        "你是财务审慎型投资人，重点关注：现金流安全、单位经济模型、回款周期、"
+        "毛利质量、融资效率与资金使用纪律。"
+    ),
+    "CTO（技术深挖）": (
+        "你是技术深挖型投资人，重点关注：技术壁垒、工程落地、迭代效率、"
+        "可靠性指标、数据/模型护城河与可复制性。"
+    ),
+}
+
+
+def get_practice_role_templates() -> dict[str, str]:
+    """返回可用于会前演练的角色模板说明（副本，避免外部误改）。"""
+    return dict(_ROLE_TEMPLATE_HINTS)
+
+
+def build_role_opening_hint(role_template: str, *, custom_hint: str = "") -> str:
+    """
+    组合角色模板提示词（可叠加用户自定义偏好）。
+
+    role_template 未命中时，仅返回 custom_hint（若有）。
+    """
+    parts: list[str] = []
+    role = (role_template or "").strip()
+    if role in _ROLE_TEMPLATE_HINTS:
+        parts.append(f"本轮扮演角色：{role}。")
+        parts.append(_ROLE_TEMPLATE_HINTS[role])
+    extra = (custom_hint or "").strip()
+    if extra:
+        parts.append(f"附加追问偏好：{extra}")
+    return "\n".join(parts)
+
 
 # ── LLM 调用层（可单独 Mock） ──────────────────────────────────────────────────
 

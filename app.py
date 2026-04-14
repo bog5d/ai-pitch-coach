@@ -844,7 +844,9 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
     """V10.3 P2.1 Tab 6：会前演练 — AI 扮投资人，问答评分。"""
     try:
         from practice_engine import (
+            build_role_opening_hint,
             evaluate_answer_and_next,
+            get_practice_role_templates,
             get_session_summary,
             start_practice_session,
         )
@@ -871,6 +873,20 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
         if practice_inst == "（手动输入）":
             practice_inst = st.text_input("机构名称", key="practice_inst_manual", placeholder="如：迪策资本")
 
+        role_templates = get_practice_role_templates()
+        role_options = list(role_templates.keys())
+        practice_role = st.selectbox(
+            "投资人角色模板（先做 3 类高频）",
+            options=role_options,
+            key="practice_role_template",
+        )
+        st.caption(f"角色风格：{role_templates.get(practice_role, '')}")
+        practice_role_custom = st.text_input(
+            "附加追问偏好（选填）",
+            key="practice_role_custom_hint",
+            placeholder="例如：连续追问现金流与续费率",
+        )
+
     session_key = f"practice_session_{company_id}"
 
     with col_start:
@@ -882,9 +898,20 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
                 st.error("请选择或填写投资机构名称。")
             else:
                 _iid, _icanon = institution_resolve(_pi)
+                opening_hint = build_role_opening_hint(
+                    practice_role,
+                    custom_hint=(practice_role_custom or "").strip(),
+                )
                 with st.spinner("AI 投资人正在准备开场问题…"):
                     try:
-                        sess = start_practice_session(_iid, company_id, ws_path)
+                        sess = start_practice_session(
+                            _iid,
+                            company_id,
+                            ws_path,
+                            opening_hint=opening_hint,
+                        )
+                        sess["role_template"] = practice_role
+                        sess["role_custom_hint"] = (practice_role_custom or "").strip()
                         st.session_state[session_key] = sess
                         st.session_state[f"{session_key}_current_q"] = sess["opening_question"]
                         st.session_state[f"{session_key}_done"] = False
@@ -933,6 +960,9 @@ def _render_practice_mode(company_id: str, ws_path: Path) -> None:
 
     # ── 当前问题 + 输入框 ──────────────────────────────────────────────────────
     inst_name = sess.get("institution_profile", {}).get("canonical_name", "投资人")
+    role_template = (sess.get("role_template") or "").strip()
+    if role_template:
+        st.caption(f"当前演练角色：{role_template}")
     st.markdown(f"### 💬 **{inst_name}** 提问：")
     st.info(current_q)
 

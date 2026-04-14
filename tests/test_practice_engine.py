@@ -34,6 +34,32 @@ def _make_mock_profile() -> dict:
     }
 
 
+# ── 角色模板（P3）──────────────────────────────────────────────────────────────
+
+def test_get_practice_role_templates_contains_ceo_cfo_cto():
+    templates = pe.get_practice_role_templates()
+    assert "CEO（战略增长）" in templates
+    assert "CFO（财务审慎）" in templates
+    assert "CTO（技术深挖）" in templates
+
+
+def test_build_role_opening_hint_contains_role_focus_and_custom_hint():
+    hint = pe.build_role_opening_hint(
+        "CFO（财务审慎）",
+        custom_hint="重点追问现金流和回款周期",
+    )
+    assert "财务" in hint or "现金流" in hint
+    assert "重点追问现金流和回款周期" in hint
+
+
+def test_build_role_opening_hint_unknown_role_falls_back_to_custom():
+    hint = pe.build_role_opening_hint(
+        "未知角色",
+        custom_hint="只问客户留存",
+    )
+    assert "只问客户留存" in hint
+
+
 # ── 会话初始化 ────────────────────────────────────────────────────────────────
 
 def test_start_session_returns_dict_with_required_keys(tmp_path):
