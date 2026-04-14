@@ -38,6 +38,17 @@ class PipelineStatus(str, Enum):
     CLOSED_LOST     = "关单失败/放弃"
 
 
+FUNNEL_STAGES: list[PipelineStatus] = [
+    PipelineStatus.INITIAL_CONTACT,
+    PipelineStatus.NDA_SIGNED,
+    PipelineStatus.MATERIALS_SENT,
+    PipelineStatus.DD_IN_PROGRESS,
+    PipelineStatus.INTERVIEW_STAGE,
+    PipelineStatus.TS_NEGOTIATION,
+]
+_FUNNEL_STAGE_INDEX = {status: idx for idx, status in enumerate(FUNNEL_STAGES)}
+
+
 # 合法状态转换图（允许向后跳级，但不允许从关单倒退）
 VALID_STATUS_TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     PipelineStatus.INITIAL_CONTACT: [
@@ -257,6 +268,57 @@ class PipelineStore:
         summary: dict[PipelineStatus, int] = {s: 0 for s in PipelineStatus}
         for r in records:
             summary[r.status] = summary.get(r.status, 0) + 1
+        return summary
+
+    def _funnel_max_stage_index(self, record: PipelineRecord) -> int:
+        """
+        返回该记录在漏斗中历史到达的最高阶段索引。
+        - CLOSED_WON 视为通过全部阶段
+        - CLOSED_LOST 尝试从 timeline 回溯最高阶段
+        - 缺失可识别历史时返回 -1（不计入漏斗）
+        """
+        if record.status == PipelineStatus.CLOSED_WON:
+            return len(FUNNEL_STAGES) - 1
+
+        direct_idx = _FUNNEL_STAGE_INDEX.get(record.status)
+        if direct_idx is not None:
+            return direct_idx
+
+        if record.status != PipelineStatus.CLOSED_LOST:
+            return -1
+
+        max_idx = -1
+        for event in record.timeline:
+            action = (event.action or "").strip()
+            if not action:
+                continue
+            try:
+                event_status = PipelineStatus(action)
+            except ValueError:
+                continue
+
+            if event_status == PipelineStatus.CLOSED_WON:
+                return len(FUNNEL_STAGES) - 1
+            idx = _FUNNEL_STAGE_INDEX.get(event_status)
+            if idx is not None and idx > max_idx:
+                max_idx = idx
+        return max_idx
+
+    def get_funnel_summary(
+        self, company_id: Optional[str] = None
+    ) -> dict[PipelineStatus, int]:
+        """
+        漏斗统计：统计「历史上曾到达过该阶段」的记录数量。
+        例如：当前在「材料发送」的项目，会同时计入「初步接触/NDA签署/材料发送」。
+        """
+        records = self.list_records(company_id=company_id)
+        summary: dict[PipelineStatus, int] = {s: 0 for s in FUNNEL_STAGES}
+        for record in records:
+            max_idx = self._funnel_max_stage_index(record)
+            if max_idx < 0:
+                continue
+            for status in FUNNEL_STAGES[: max_idx + 1]:
+                summary[status] += 1
         return summary
 
 

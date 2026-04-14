@@ -111,6 +111,21 @@ class TestBuildInstitutionProfile:
         assert "军工" in all_kw
         assert profile["session_count"] == 3
 
+    def test_canonical_name_used_when_institution_name_missing(self):
+        records = [
+            {
+                "institution_id": "uuid_xxx",
+                "institution_name": "",
+                "institution_canonical": "迪策资本",
+                "high_freq_topics": ["硬科技"],
+                "focus_keywords": ["军工"],
+                "preferred_stages": ["B轮"],
+                "session_count": 1,
+            }
+        ]
+        profile = build_institution_profile_from_analytics(records)
+        assert profile["institution_name"] == "迪策资本"
+
 
 # ─────────────────────────────────────────────
 # 2. 匹配分计算测试
@@ -220,6 +235,25 @@ class TestMatchInstitutions:
         with patch("investor_matcher._load_analytics_by_institution", return_value=records):
             results = match_institutions(company_snapshot, workspace_root="/fake", top_n=5)
         assert len(results) <= 5
+
+    def test_match_result_uses_canonical_name_in_ui_field(self, company_snapshot):
+        records = {
+            "uuid_dikce": [
+                {
+                    "institution_id": "uuid_dikce",
+                    "institution_name": "",
+                    "institution_canonical": "迪策资本",
+                    "high_freq_topics": ["军工电子"],
+                    "focus_keywords": ["ToB"],
+                    "preferred_stages": ["B轮"],
+                    "session_count": 2,
+                }
+            ]
+        }
+        with patch("investor_matcher._load_analytics_by_institution", return_value=records):
+            results = match_institutions(company_snapshot, workspace_root="/fake")
+        assert results
+        assert results[0].institution_name == "迪策资本"
 
 
 # ─────────────────────────────────────────────

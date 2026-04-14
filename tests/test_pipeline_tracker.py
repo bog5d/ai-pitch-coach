@@ -208,3 +208,65 @@ class TestPipelineStats:
         assert summary[PipelineStatus.INITIAL_CONTACT] == 2
         assert summary[PipelineStatus.NDA_SIGNED] == 1
         assert summary[PipelineStatus.CLOSED_WON] == 1
+
+    def test_get_funnel_summary_accumulates_historical_stage(self, store):
+        """
+        漏斗统计应表示「历史上到达过该阶段」而非「当前停留阶段」。
+        """
+        nda_only = PipelineRecord(
+            record_id="f1",
+            institution_id="fund_1",
+            institution_name="基金1",
+            company_id="zetian",
+            company_name="泽天智航",
+            status=PipelineStatus.NDA_SIGNED,
+        )
+        materials = PipelineRecord(
+            record_id="f2",
+            institution_id="fund_2",
+            institution_name="基金2",
+            company_id="zetian",
+            company_name="泽天智航",
+            status=PipelineStatus.MATERIALS_SENT,
+        )
+        won = PipelineRecord(
+            record_id="f3",
+            institution_id="fund_3",
+            institution_name="基金3",
+            company_id="zetian",
+            company_name="泽天智航",
+            status=PipelineStatus.CLOSED_WON,
+        )
+        lost_after_interview = PipelineRecord(
+            record_id="f4",
+            institution_id="fund_4",
+            institution_name="基金4",
+            company_id="zetian",
+            company_name="泽天智航",
+            status=PipelineStatus.CLOSED_LOST,
+            timeline=[
+                TimelineEntry(date="2026-04-01", action=PipelineStatus.NDA_SIGNED.value, note="签NDA"),
+                TimelineEntry(date="2026-04-02", action=PipelineStatus.MATERIALS_SENT.value, note="发材料"),
+                TimelineEntry(date="2026-04-03", action=PipelineStatus.DD_IN_PROGRESS.value, note="尽调"),
+                TimelineEntry(date="2026-04-04", action=PipelineStatus.INTERVIEW_STAGE.value, note="访谈"),
+                TimelineEntry(date="2026-04-05", action=PipelineStatus.CLOSED_LOST.value, note="放弃"),
+            ],
+        )
+        lost_without_timeline = PipelineRecord(
+            record_id="f5",
+            institution_id="fund_5",
+            institution_name="基金5",
+            company_id="zetian",
+            company_name="泽天智航",
+            status=PipelineStatus.CLOSED_LOST,
+        )
+        for r in [nda_only, materials, won, lost_after_interview, lost_without_timeline]:
+            store.save(r)
+
+        funnel = store.get_funnel_summary(company_id="zetian")
+        assert funnel[PipelineStatus.INITIAL_CONTACT] == 4
+        assert funnel[PipelineStatus.NDA_SIGNED] == 4
+        assert funnel[PipelineStatus.MATERIALS_SENT] == 3
+        assert funnel[PipelineStatus.DD_IN_PROGRESS] == 2
+        assert funnel[PipelineStatus.INTERVIEW_STAGE] == 2
+        assert funnel[PipelineStatus.TS_NEGOTIATION] == 1
