@@ -2183,11 +2183,19 @@ def _warroom_transcribe_voice(audio_bytes: bytes) -> str:
     except Exception:
         return ""
     finally:
+        # P3修复：延迟 2 秒删除，避免 Windows 文件句柄未释放导致删除失败积累
         if tmp_path:
-            try:
-                _os.unlink(tmp_path)
-            except OSError:
-                pass
+            import threading as _threading
+            def _deferred_unlink(p: str) -> None:
+                import time as _t
+                _t.sleep(2)
+                try:
+                    _os.unlink(p)
+                except OSError:
+                    pass
+            _threading.Thread(
+                target=_deferred_unlink, args=(tmp_path,), daemon=True
+            ).start()
 
 
 def _warroom_coach_reply(
@@ -2227,9 +2235,12 @@ def _warroom_coach_reply(
             f"  {i}. {q}" for i, q in enumerate(weak_points[:3], 1)
         )
 
+    # P2修复：company_id 截断+换行消毒，防止 prompt injection
+    safe_company = (company_id or "未指定")[:40].replace("\n", " ").replace("\r", " ")
+
     system_prompt = f"""你是一位经验丰富的融资教练，正在一对一辅导一家科技创业公司的融资负责人备战投资人见面。
 
-公司项目：{company_id or "未指定"}
+公司项目：{safe_company}
 {asset_lines}
 {weak_lines}
 
@@ -2242,16 +2253,20 @@ def _warroom_coach_reply(
 
 对话目标：帮用户在见投资人之前，找到最薄弱的环节并针对性加强。"""
 
+    # P2修复：用户输入截断，防止超长注入
+    safe_input = user_input[:2000]
+
     messages = [{"role": "system", "content": system_prompt}]
-    # 带入近3轮历史（防止 token 超限）
     for msg in chat_history[-6:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": user_input})
+    messages.append({"role": "user", "content": safe_input})
 
     try:
+        # P0修复：加 timeout=30，防止 API 无响应挂死
         client = _OpenAI(
             base_url="https://api.deepseek.com",
             api_key=api_key,
+            timeout=30.0,
         )
         resp = client.chat.completions.create(
             model="deepseek-chat",
@@ -2261,7 +2276,9 @@ def _warroom_coach_reply(
         )
         return resp.choices[0].message.content or "（AI 返回为空）"
     except Exception as exc:
-        return f"（AI 教练暂时不可用：{exc}）"
+        # P2修复：只暴露错误类型，不暴露含 API Key 的完整异常信息
+        err_type = type(exc).__name__
+        return f"（AI 教练暂时不可用，请稍后重试。错误类型：{err_type}）"
 
 
 def _render_warroom_page(company_id: str, workspace: str) -> None:
@@ -2330,9 +2347,14 @@ def _render_warroom_page(company_id: str, workspace: str) -> None:
                 if st.button("🔄 刷新扫描", key="btn_warroom_refresh_assets",
                              use_container_width=True):
                     st.session_state["warroom_asset_status"] = None
+                    st.session_state["warroom_asset_cache_ts"] = 0.0
 
+            # P1修复：缓存 TTL 5 分钟，仓颉更新后自动重扫
+            import time as _time_mod
+            _cache_ts = st.session_state.get("warroom_asset_cache_ts", 0.0)
+            _cache_expired = (_time_mod.time() - _cache_ts) > 300
             _warroom_assets = st.session_state.get("warroom_asset_status")
-            if _warroom_assets is None:
+            if _warroom_assets is None or _cache_expired:
                 try:
                     from asset_bridge import load_asset_index as _load_ai
                     _all_assets = _load_ai()
@@ -2356,6 +2378,7 @@ def _render_warroom_page(company_id: str, workspace: str) -> None:
                     for name, kws in _CORE_MATERIAL_KEYWORDS.items()
                 }
                 st.session_state["warroom_asset_status"] = _warroom_assets
+                st.session_state["warroom_asset_cache_ts"] = _time_mod.time()
 
                 if not _all_assets:
                     st.caption("⚠️ 未读取到仓颉资产库，请先用 FSS 完成一次向上扫描。")
@@ -2395,7 +2418,9 @@ def _render_warroom_page(company_id: str, workspace: str) -> None:
                     try:
                         from memory_engine import list_all_executive_memories_for_company as _lam
                         _pairs = _lam(company_id)
-                        # 按 weight 降序，取 raw_text 非空的前 5 条
+                        # P1修复：先截断再排序，防止万条数据导致卡顿
+                        # 最多取前 200 条参与排序（weight 最高的自然浮到前面）
+                        _pairs = _pairs[:200]
                         _sorted = sorted(
                             _pairs,
                             key=lambda x: float(getattr(x[1], "weight", 1.0)),
@@ -2483,21 +2508,31 @@ def _render_warroom_page(company_id: str, workspace: str) -> None:
                     st.session_state["warroom_voice_transcribed"] = False
                     st.session_state.pop("warroom_voice_prefill", None)
 
-            # 文字输入区（语音转写结果自动填入）
-            _prefill = st.session_state.pop("warroom_voice_prefill", "") or ""
+            # 文字输入区 — P0修复：不用 value= 参数，改写 widget key
+            # 语音转写结果通过 session_state["warroom_user_input"] 写入，
+            # 避免每次 rerun 时 value=_prefill 覆盖用户已编辑的内容
+            if "warroom_voice_prefill" in st.session_state:
+                _prefill = st.session_state.pop("warroom_voice_prefill")
+                if _prefill:
+                    st.session_state["warroom_user_input"] = _prefill
+
             user_input = st.text_area(
                 "说出你的顾虑...",
-                value=_prefill,
                 placeholder="例如：我最怕被问市场规模，数据不太扎实...",
                 height=90,
                 key="warroom_user_input",
                 label_visibility="collapsed",
             )
 
-            if st.button("📨 发送给教练", key="btn_warroom_send",
-                         use_container_width=True):
+            # P1修复：发送锁，防止双击重复提交
+            _is_sending = st.session_state.get("warroom_sending", False)
+            if _is_sending:
+                st.info("教练正在思考，请稍候...")
+            elif st.button("📨 发送给教练", key="btn_warroom_send",
+                           use_container_width=True):
                 raw = (user_input or "").strip()
                 if raw:
+                    st.session_state["warroom_sending"] = True
                     chat_history.append({"role": "user", "content": raw})
                     st.session_state["warroom_chat_history"] = chat_history
                     with st.spinner("AI 教练思考中..."):
@@ -2511,8 +2546,8 @@ def _render_warroom_page(company_id: str, workspace: str) -> None:
                     chat_history.append({"role": "assistant", "content": reply})
                     st.session_state["warroom_chat_history"] = chat_history
                     st.session_state["warroom_focus_topic"] = raw[:20]
-                    # 清除语音状态，允许下次重新录音
                     st.session_state["warroom_voice_transcribed"] = False
+                    st.session_state["warroom_sending"] = False
                     st.rerun()
                 else:
                     st.warning("请先输入你的顾虑，或录一段语音。")
@@ -2615,6 +2650,10 @@ def main() -> None:
         st.session_state["warroom_voice_transcribed"] = False
     if "warroom_weak_company" not in st.session_state:
         st.session_state["warroom_weak_company"] = None
+    if "warroom_sending" not in st.session_state:
+        st.session_state["warroom_sending"] = False
+    if "warroom_asset_cache_ts" not in st.session_state:
+        st.session_state["warroom_asset_cache_ts"] = 0.0
 
     with st.sidebar:
         # ── V8.4 公司档案选择器 ─────────────────────────────────────────────────
