@@ -2152,6 +2152,431 @@ def _render_pipeline_crm_page(company_id: str, workspace: str) -> None:
                         st.caption(f"  • {iv}")
 
 
+def _warroom_transcribe_voice(audio_bytes: bytes) -> str:
+    """
+    转写 st.audio_input 录制的短语音（WAV），返回纯文本。
+    失败静默返回空字符串，不影响主流程。
+    """
+    import os as _os
+    import tempfile as _tmp
+
+    if not audio_bytes:
+        return ""
+    if not _os.getenv("DASHSCOPE_API_KEY", "").strip():
+        return ""
+
+    tmp_path = ""
+    try:
+        from transcriber import transcribe_aliyun as _asr
+        fd, tmp_path = _tmp.mkstemp(suffix=".wav", prefix="warroom_voice_")
+        try:
+            with _os.fdopen(fd, "wb") as f:
+                f.write(audio_bytes)
+        except Exception:
+            try:
+                _os.close(fd)
+            except OSError:
+                pass
+            raise
+        words = _asr(tmp_path)
+        return "".join(getattr(w, "word", "") for w in words).strip()
+    except Exception:
+        return ""
+    finally:
+        if tmp_path:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
+def _warroom_coach_reply(
+    user_input: str,
+    chat_history: list[dict],
+    company_id: str,
+    asset_status: dict | None,
+    weak_points: list[str] | None,
+) -> str:
+    """
+    调用 DeepSeek 生成融资教练回复。
+    失败时静默返回兜底文本，不影响页面渲染。
+    """
+    import os as _os
+    try:
+        from openai import OpenAI as _OpenAI
+    except ImportError:
+        return "（openai 包未安装，无法调用 AI 教练）"
+
+    api_key = _os.getenv("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        return "（未配置 DEEPSEEK_API_KEY，请先在侧栏保存 API Key）"
+
+    # 组装公司上下文
+    asset_lines = ""
+    if asset_status:
+        ready = [k for k, v in asset_status.items() if v]
+        missing = [k for k, v in asset_status.items() if not v]
+        asset_lines = (
+            f"已有材料：{', '.join(ready) if ready else '无'}\n"
+            f"缺失材料：{', '.join(missing) if missing else '无'}"
+        )
+
+    weak_lines = ""
+    if weak_points:
+        weak_lines = "历史高频失分题：\n" + "\n".join(
+            f"  {i}. {q}" for i, q in enumerate(weak_points[:3], 1)
+        )
+
+    system_prompt = f"""你是一位经验丰富的融资教练，正在一对一辅导一家科技创业公司的融资负责人备战投资人见面。
+
+公司项目：{company_id or "未指定"}
+{asset_lines}
+{weak_lines}
+
+你的风格：
+- 共情但直接，不废话
+- 每次回复聚焦一个核心问题，不发散
+- 给出可立刻执行的建议，而不是泛泛而谈
+- 回复控制在150字以内，用换行分段，便于快速阅读
+- 适当引用公司已有或缺失的材料，让建议更具体
+
+对话目标：帮用户在见投资人之前，找到最薄弱的环节并针对性加强。"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+    # 带入近3轮历史（防止 token 超限）
+    for msg in chat_history[-6:]:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_input})
+
+    try:
+        client = _OpenAI(
+            base_url="https://api.deepseek.com",
+            api_key=api_key,
+        )
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            max_tokens=400,
+            temperature=0.7,
+        )
+        return resp.choices[0].message.content or "（AI 返回为空）"
+    except Exception as exc:
+        return f"（AI 教练暂时不可用：{exc}）"
+
+
+def _render_warroom_page(company_id: str, workspace: str) -> None:
+    """FOS MVP — 融资作战室。
+
+    左栏（70%）：倒计时 + 材料战备清单 + 历史弱点
+    右栏（30%）：AI 教练对话入口
+
+    Day 1：骨架 + 静态占位（左栏材料/弱点为静态数据）。
+    Day 2：接入 asset_bridge 真实扫描。
+    Day 3：接入 memory_engine 历史弱点。
+    Day 4：右栏接入 DeepSeek LLM 真实回复。
+    Day 5：右栏接入 ASR 语音输入。
+    """
+    import datetime as _dt
+
+    st.markdown("## 🎯 融资作战室")
+    st.caption("距下次见投资人还有多久？让我们一起备战。")
+
+    col_left, col_right = st.columns([7, 3])
+
+    # ── 左栏 ────────────────────────────────────────────────────────────────
+    with col_left:
+
+        # ── 卡片1：倒计时 ─────────────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("#### 📅 距下次见投资人")
+            meeting_date = st.date_input(
+                "见面日期",
+                value=st.session_state.get("warroom_meeting_date"),
+                min_value=_dt.date.today(),
+                key="warroom_date_picker",
+                label_visibility="collapsed",
+            )
+            # 不反向赋值 widget key，存到独立 key（铁律三）
+            if meeting_date:
+                st.session_state["warroom_meeting_date"] = meeting_date
+                days_left = (meeting_date - _dt.date.today()).days
+                if days_left <= 0:
+                    st.error("📅 **今天就是见面日！** 快去右侧做最后确认。")
+                elif days_left <= 3:
+                    st.error(f"⏳ 仅剩 **{days_left} 天**，立即备战！")
+                elif days_left <= 7:
+                    st.warning(f"⏳ 还有 **{days_left} 天**，加紧准备。")
+                else:
+                    st.success(f"⏳ 还有 **{days_left} 天**，系统为你备战中。")
+            else:
+                st.info("请选择下次见投资人的日期，系统开始倒计时备战。")
+
+        # ── 卡片2：材料战备清单 ───────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("#### 📋 材料战备清单")
+
+            # Day 2：接入 asset_bridge 真实扫描
+            # 每次进入页面或点刷新时重新扫描；结果缓存在 warroom_asset_status
+            _CORE_MATERIAL_KEYWORDS: dict[str, list[str]] = {
+                "商业计划书（BP）":  ["商业计划", "bp", "计划书", "融资计划", "business"],
+                "核心团队简介":     ["团队", "简介", "成员", "创始人", "founder"],
+                "产品 Demo / 截图": ["demo", "产品", "截图", "演示", "原型", "prototype"],
+                "市场规模测算":     ["市场", "规模", "tam", "sam", "som", "行业分析"],
+                "3年财务预测":      ["财务", "预测", "financial", "利润", "收入", "成本", "revenue"],
+            }
+
+            col_refresh, _ = st.columns([1, 3])
+            with col_refresh:
+                if st.button("🔄 刷新扫描", key="btn_warroom_refresh_assets",
+                             use_container_width=True):
+                    st.session_state["warroom_asset_status"] = None
+
+            _warroom_assets = st.session_state.get("warroom_asset_status")
+            if _warroom_assets is None:
+                try:
+                    from asset_bridge import load_asset_index as _load_ai
+                    _all_assets = _load_ai()
+                except Exception:
+                    _all_assets = []
+
+                def _asset_hit(keywords: list[str], assets: list[dict]) -> bool:
+                    """任一资产的 filename+summary+tags 含任一关键词则命中。"""
+                    for a in assets:
+                        haystack = " ".join([
+                            a.get("filename", ""),
+                            a.get("summary", ""),
+                            " ".join(a.get("tags", [])),
+                        ]).lower()
+                        if any(kw.lower() in haystack for kw in keywords):
+                            return True
+                    return False
+
+                _warroom_assets = {
+                    name: _asset_hit(kws, _all_assets)
+                    for name, kws in _CORE_MATERIAL_KEYWORDS.items()
+                }
+                st.session_state["warroom_asset_status"] = _warroom_assets
+
+                if not _all_assets:
+                    st.caption("⚠️ 未读取到仓颉资产库，请先用 FSS 完成一次向上扫描。")
+
+            total = len(_warroom_assets)
+            ready = sum(1 for ok in _warroom_assets.values() if ok)
+            pct = int(ready / total * 100) if total else 0
+            st.progress(ready / total if total else 0,
+                        text=f"完备度 {ready}/{total}（{pct}%）")
+
+            for name, ok in _warroom_assets.items():
+                if ok:
+                    st.markdown(f"✅ {name}")
+                else:
+                    st.markdown(f"❌ **{name}** :red[需补充]")
+
+            if ready < total:
+                missing_n = total - ready
+                st.caption(f"💡 还差 {missing_n} 件材料——告诉右侧教练你的顾虑，他会帮你排优先级。")
+
+        # ── 卡片3：历史高频失分题 ─────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("#### 🔥 历史高频失分题")
+            if not company_id or company_id == "__new__":
+                st.info("请先在侧栏选择项目档案，加载该项目的历史弱点。")
+            else:
+                # Day 3：接入 memory_engine 真实弱点数据
+                # 按 weight 降序取 Top 3；无数据时给引导提示
+                _weak_cache = st.session_state.get("warroom_weak_points")
+                # 切换公司时 company_id 变化 → 清缓存
+                if st.session_state.get("warroom_weak_company") != company_id:
+                    _weak_cache = None
+                    st.session_state["warroom_weak_points"] = None
+                    st.session_state["warroom_weak_company"] = company_id
+
+                if _weak_cache is None:
+                    try:
+                        from memory_engine import list_all_executive_memories_for_company as _lam
+                        _pairs = _lam(company_id)
+                        # 按 weight 降序，取 raw_text 非空的前 5 条
+                        _sorted = sorted(
+                            _pairs,
+                            key=lambda x: float(getattr(x[1], "weight", 1.0)),
+                            reverse=True,
+                        )
+                        _weak_cache = [
+                            m.raw_text
+                            for _, m in _sorted
+                            if (m.raw_text or "").strip()
+                        ][:5]
+                    except Exception:
+                        _weak_cache = []
+                    st.session_state["warroom_weak_points"] = _weak_cache
+
+                if _weak_cache:
+                    st.caption(f"来自「{company_id}」历史错题本，按重要程度排序，共 {len(_weak_cache)} 条")
+                    for i, q in enumerate(_weak_cache[:3], 1):
+                        st.markdown(f"**{i}.** {q}")
+                    if len(_weak_cache) > 3:
+                        with st.expander(f"查看更多（共 {len(_weak_cache)} 条）"):
+                            for i, q in enumerate(_weak_cache[3:], 4):
+                                st.markdown(f"**{i}.** {q}")
+                else:
+                    st.info(
+                        "还没有历史错题记录。\n\n"
+                        "完成第一次访谈录音复盘后，系统会自动积累该公司的弱点清单。"
+                    )
+
+                if st.button("🎯 开始针对性训练", key="btn_warroom_train",
+                             use_container_width=True):
+                    st.session_state["v86_dashboard_mode"] = True
+                    st.session_state["fos_page"] = ""
+                    st.rerun()
+
+    # ── 右栏 ────────────────────────────────────────────────────────────────
+    with col_right:
+
+        # ── AI 教练对话 ───────────────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("#### 💬 AI 融资教练")
+
+            chat_history: list[dict] = st.session_state.get("warroom_chat_history", [])
+
+            # 对话历史展示
+            if not chat_history:
+                with st.chat_message("assistant"):
+                    st.markdown(
+                        "你好，我是你的融资教练。\n\n"
+                        "在开始备战之前，先告诉我——\n\n"
+                        "**你最担心投资人问你哪个问题？**\n\n"
+                        "或者上次见投资人时，哪里没答好？"
+                    )
+            else:
+                for msg in chat_history:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+
+            # ── Day 5：语音输入（优先），文字输入（备选）────────────────
+            _has_dashscope = bool(
+                __import__("os").getenv("DASHSCOPE_API_KEY", "").strip()
+            )
+            _voice_text = ""
+
+            if _has_dashscope:
+                st.caption("🎤 录完自动转文字，或直接打字输入")
+                _audio_val = st.audio_input(
+                    "按住录音",
+                    key="warroom_voice_input",
+                    label_visibility="collapsed",
+                )
+                if _audio_val is not None:
+                    _audio_bytes = _audio_val.read()
+                    if _audio_bytes and not st.session_state.get(
+                        "warroom_voice_transcribed"
+                    ):
+                        with st.spinner("正在转写语音..."):
+                            _voice_text = _warroom_transcribe_voice(_audio_bytes)
+                        if _voice_text:
+                            st.session_state["warroom_voice_prefill"] = _voice_text
+                            st.session_state["warroom_voice_transcribed"] = True
+                        else:
+                            st.caption("未能识别语音，请直接打字输入。")
+                else:
+                    # 录音组件清空时重置标记，允许下次录音
+                    st.session_state["warroom_voice_transcribed"] = False
+                    st.session_state.pop("warroom_voice_prefill", None)
+
+            # 文字输入区（语音转写结果自动填入）
+            _prefill = st.session_state.pop("warroom_voice_prefill", "") or ""
+            user_input = st.text_area(
+                "说出你的顾虑...",
+                value=_prefill,
+                placeholder="例如：我最怕被问市场规模，数据不太扎实...",
+                height=90,
+                key="warroom_user_input",
+                label_visibility="collapsed",
+            )
+
+            if st.button("📨 发送给教练", key="btn_warroom_send",
+                         use_container_width=True):
+                raw = (user_input or "").strip()
+                if raw:
+                    chat_history.append({"role": "user", "content": raw})
+                    st.session_state["warroom_chat_history"] = chat_history
+                    with st.spinner("AI 教练思考中..."):
+                        reply = _warroom_coach_reply(
+                            user_input=raw,
+                            chat_history=chat_history[:-1],
+                            company_id=company_id,
+                            asset_status=st.session_state.get("warroom_asset_status"),
+                            weak_points=st.session_state.get("warroom_weak_points"),
+                        )
+                    chat_history.append({"role": "assistant", "content": reply})
+                    st.session_state["warroom_chat_history"] = chat_history
+                    st.session_state["warroom_focus_topic"] = raw[:20]
+                    # 清除语音状态，允许下次重新录音
+                    st.session_state["warroom_voice_transcribed"] = False
+                    st.rerun()
+                else:
+                    st.warning("请先输入你的顾虑，或录一段语音。")
+
+        # ── 本次重点练习 ──────────────────────────────────────────────────
+        with st.container(border=True):
+            st.markdown("#### 📚 本次重点练习")
+            focus = st.session_state.get("warroom_focus_topic", "")
+            if focus:
+                st.success(f"🎯 聚焦：**{focus}**")
+                if st.button("▶️ 进入会前演练", key="btn_goto_practice",
+                             use_container_width=True):
+                    st.session_state["v86_dashboard_mode"] = True
+                    st.session_state["fos_page"] = ""
+                    st.rerun()
+            else:
+                st.caption("发送顾虑后，这里会显示本次练习方向。")
+
+            if st.button("🗑️ 清空对话 重新开始", key="btn_warroom_clear",
+                         use_container_width=True):
+                st.session_state["warroom_chat_history"] = []
+                st.session_state["warroom_focus_topic"] = ""
+                st.session_state["warroom_voice_transcribed"] = False
+                st.rerun()
+
+        # ── Day 6：战后包扎 ── 见完投资人后记录反馈 ──────────────────────
+        with st.container(border=True):
+            st.markdown("#### 🩹 战后包扎")
+            st.caption("见完投资人了？把今天被问住的问题记下来，自动进错题本。")
+            debrief_q = st.text_area(
+                "今天被问住的问题",
+                placeholder="例如：被问到「你们为什么不直接找BAT合作」，没答好...",
+                height=70,
+                key="warroom_debrief_input",
+                label_visibility="collapsed",
+            )
+            if st.button("📥 记入错题本", key="btn_warroom_debrief",
+                         use_container_width=True):
+                raw_debrief = (debrief_q or "").strip()
+                if raw_debrief and company_id and company_id != "__new__":
+                    try:
+                        from memory_engine import append_executive_memory
+                        from schema import ExecutiveMemory as _EM
+                        import time as _time
+                        _mem = _EM(
+                            tag="战后包扎",
+                            raw_text=raw_debrief,
+                            correction="（待复盘后填写改进口径）",
+                            risk_type="战后记录",
+                            weight=1.5,
+                        )
+                        append_executive_memory(company_id, "战后包扎", _mem)
+                        # 清缓存，下次进入自动重新加载弱点
+                        st.session_state["warroom_weak_points"] = None
+                        st.toast("✅ 已记入错题本，下次开战室自动出现在弱点区", icon="✅")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"记录失败：{exc}")
+                elif not raw_debrief:
+                    st.warning("请先描述被问住的问题。")
+                else:
+                    st.warning("请先在侧栏选择项目档案。")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -2174,6 +2599,22 @@ def main() -> None:
         st.session_state["current_company_cache"] = {}
     if "_active_company_id" not in st.session_state:
         st.session_state["_active_company_id"] = None
+
+    # ── 作战室专用状态初始化（warroom_ 前缀隔离） ─────────────────────────
+    if "warroom_meeting_date" not in st.session_state:
+        st.session_state["warroom_meeting_date"] = None
+    if "warroom_chat_history" not in st.session_state:
+        st.session_state["warroom_chat_history"] = []
+    if "warroom_focus_topic" not in st.session_state:
+        st.session_state["warroom_focus_topic"] = ""
+    if "warroom_asset_status" not in st.session_state:
+        st.session_state["warroom_asset_status"] = None
+    if "warroom_weak_points" not in st.session_state:
+        st.session_state["warroom_weak_points"] = None
+    if "warroom_voice_transcribed" not in st.session_state:
+        st.session_state["warroom_voice_transcribed"] = False
+    if "warroom_weak_company" not in st.session_state:
+        st.session_state["warroom_weak_company"] = None
 
     with st.sidebar:
         # ── V8.4 公司档案选择器 ─────────────────────────────────────────────────
@@ -2299,6 +2740,9 @@ def main() -> None:
         st.divider()
         if st.button("📊 高管数字记忆库", key="btn_v86_open_dash", use_container_width=True):
             st.session_state["v86_dashboard_mode"] = True
+            st.rerun()
+        if st.button("🚀 融资作战室", key="btn_warroom", use_container_width=True):
+            st.session_state["fos_page"] = "warroom"
             st.rerun()
         if st.button("🎯 投资人匹配", key="btn_investor_matcher", use_container_width=True):
             st.session_state["fos_page"] = "investor_matcher"
@@ -2523,6 +2967,13 @@ def main() -> None:
             st.session_state["fos_page"] = ""
             st.rerun()
         _render_pipeline_crm_page(selected_company_id, workspace)
+        st.stop()
+
+    if _fos_page == "warroom":
+        if st.button("⬅️ 返回主控制台", key="btn_warroom_back"):
+            st.session_state["fos_page"] = ""
+            st.rerun()
+        _render_warroom_page(selected_company_id, workspace)
         st.stop()
     # ─────────────────────────────────────────────────────────────────────────
 
