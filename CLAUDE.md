@@ -143,4 +143,4 @@ def test_pipeline_with_cache(tmp_path):
 
 ---
 
-*最后更新：V10.6.1 修复投资人匹配结果展示 IndentationError（expander内col布局缩进错误）；铁律一至五仍适用。*
+*最后更新：V10.7.0 新增融资作战室 MVP（左右分屏备战界面）+ 红蓝对抗 P0~P3 全量修复；铁律一至五仍适用。*

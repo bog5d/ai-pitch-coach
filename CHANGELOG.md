@@ -4,6 +4,31 @@
 
 ---
 
+## [V10.7.0] — 2026-04-14 · 融资作战室 MVP + 红蓝对抗加固版
+
+新增「🚀 融资作战室」备战界面，全量通过红蓝对抗 P0~P3 修复，**605 passed**。
+
+### 新增（1 项）
+
+| # | 描述 | 位置 |
+|---|------|------|
+| 新增-1 | **融资作战室 MVP**：左右分屏备战界面（左栏：倒计时/材料清单/历史弱点；右栏：AI教练对话/语音输入/战后包扎）；材料清单接 asset_bridge 真实扫描（5分钟TTL自动刷新）；历史弱点接 memory_engine 按 weight 排序；DeepSeek 教练注入公司上下文+资产状态；DashScope 语音转写自动填入；见完投资人可直接记入错题本（weight=1.5） | `app.py` `_render_warroom_page()` `_warroom_coach_reply()` `_warroom_transcribe_voice()` |
+
+### 修复（8 项，红蓝对抗识别）
+
+| # | 级别 | 描述 | 位置 |
+|---|------|------|------|
+| Fix-1 | P0 | **文字框 rerun 清空**：`value=_prefill` 改为写入 `session_state[widget_key]`，修复语音转写后每次重渲染清空用户输入 | `app.py` |
+| Fix-2 | P0 | **DeepSeek 无超时挂死**：`OpenAI(timeout=30.0)`，防止 API 慢时 spinner 永转 | `app.py` |
+| Fix-3 | P1 | **双击重复发送**：`warroom_sending` 布尔锁，发送中隐藏按钮显示提示 | `app.py` |
+| Fix-4 | P1 | **资产缓存无 TTL**：5 分钟时间戳，仓颉更新后自动重扫 | `app.py` |
+| Fix-5 | P1 | **错题本无限膨胀**：加载截断至 200 条再排序，防万条数据卡顿 | `app.py` |
+| Fix-6 | P2 | **Prompt Injection**：`company_id` 截 40 字+换行消毒，用户输入截 2000 字 | `app.py` |
+| Fix-7 | P2 | **API Key 泄露风险**：异常只返回 `type(exc).__name__`，不暴露完整 exc | `app.py` |
+| Fix-8 | P3 | **Windows 临时文件积累**：后台线程延迟 2 秒删除语音临时文件 | `app.py` |
+
+---
+
 ## [V10.6.1] — 2026-04-13 · 投资人匹配显示修复版
 
 修复投资人匹配结果页面 IndentationError，**605 passed**。无新功能，向下兼容。

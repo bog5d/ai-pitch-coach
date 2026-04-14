@@ -8,8 +8,8 @@
 
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
-| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V10.6.1**），纯净包目录名随其变化。 |
-| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。**V10.5✅**：平衡评估（positive_highlights）+质量门槛强化+finalize Toast修复。**V10.6✅**：稳定性五项修复——analytics补写投资人匹配所需字段（high_freq_topics/focus_keywords）；investor_matcher从company_id提取关键词；Pipeline load()状态容错；save()tmp路径修正；CRM Toast修复。**V10.6.1✅**：投资人匹配结果展示 IndentationError 修复（expander内col布局缩进错误导致col_s/col_d被放在with块外部）。 |
+| **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V10.7.0**），纯净包目录名随其变化。 |
+| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。**V10.5✅**：平衡评估（positive_highlights）+质量门槛强化+finalize Toast修复。**V10.6✅**：稳定性五项修复——analytics补写投资人匹配所需字段（high_freq_topics/focus_keywords）；investor_matcher从company_id提取关键词；Pipeline load()状态容错；save()tmp路径修正；CRM Toast修复。**V10.6.1✅**：投资人匹配结果展示 IndentationError 修复。**V10.7.0✅**：融资作战室 MVP——左右分屏备战界面（倒计时+材料清单+历史弱点+DeepSeek教练对话+语音输入+战后包扎），红蓝对抗全量修复 P0~P3（超时锁/发送锁/缓存TTL/Prompt消毒/错误脱敏/Windows临时文件）。 |
 | **回归测试** | `pytest tests/` → 当前全量 **605 passed**（AI Coach）；FSS `cd AI_CangJie_FSS && pytest tests/` → **45 passed**。 |
 | **FOS Sprint 1-6** | 2026-04-13 全部完成。FSS侧：`src/document_intake.py`（体检）、`document_archiver.py`（归档）、`matchmaker_v5.py`（尽调响应V5.0）、`asset_bridge_fss.py`；AI Coach侧：`src/investor_matcher.py`（投资人匹配）、`src/pipeline_tracker.py`（融资CRM）；AI Coach UI新增「🎯投资人匹配」「📋融资Pipeline」页面。路线图见 `docs/strategic/2026-04-13_FOS完整路线图_给新AI.md`。FSS全量66 passed，AI Coach全量605 passed。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
