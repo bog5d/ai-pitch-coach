@@ -39,7 +39,8 @@ def test_record_failure_increments_count(tmp_path):
         gs._record_failure("err2")
         status = gs._load_sync_status()
     assert status["consecutive_failures"] == 2
-    assert status["last_error"] == "err2"
+    assert "err2" in (status["last_error"] or "")
+    assert status["channels"]["analytics"]["consecutive_failures"] == 2
 
 
 # ── needs_alert 触发条件 ──────────────────────────────────────────────────────
@@ -122,6 +123,16 @@ def test_push_file_failure_calls_record_failure(tmp_path):
         status = gs._load_sync_status()
     assert status["consecutive_failures"] == 1
     assert "403" in (status["last_error"] or "")
+
+
+def test_channel_status_split_between_analytics_and_institutions(tmp_path):
+    with _mock_status_path(tmp_path):
+        gs._record_failure("a-fail", channel="analytics")
+        gs._record_success(channel="institutions")
+        s = gs.get_sync_status()
+    assert s["analytics"]["last_error"] == "a-fail"
+    assert s["analytics"]["consecutive_failures"] == 1
+    assert s["institutions"]["last_success"] is not None
 
 
 def test_empty_status_file_handled_gracefully(tmp_path):

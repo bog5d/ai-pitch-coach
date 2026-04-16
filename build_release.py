@@ -1,7 +1,7 @@
 """
 一键生成「纯净交付」文件夹 + 交付级 ZIP（Green-Box Release）。
 运行：在项目根目录执行  python build_release.py
-发版版本以本文件内 CURRENT_VERSION 为准（当前 V9.6.4）；目录 / ZIP 名随其变化。
+发版版本以本文件内 CURRENT_VERSION 为准（当前 V10.7.0）；目录 / ZIP 名随其变化。
 先在系统临时目录下完整拼装再打包；若项目根下旧版交付目录被 debug.log 等占用无法删除，仍会生成 ZIP，并提示新文件夹的临时路径。
 若根目录存在 `.streamlit/`（如 `config.toml` 上调 `maxUploadSize`），会一并打入交付目录。
 
@@ -48,6 +48,7 @@ REQUIRED_ROOT_FILES = [
 
 # 存在则拷贝，缺失不报错
 OPTIONAL_ROOT_FILES = [
+    "AGENTS.md",
     "写给同事的使用说明书.txt",
     "小白保姆级操作手册.md",
     "V6.2_新功能与体验大升级.txt",
@@ -221,6 +222,18 @@ def _validate_prereqs(extra_bats: list[str], extra_shs: list[str]) -> list[str]:
     return missing
 
 
+def _copy_strategic_docs(dest_root: Path) -> None:
+    """将 docs/strategic 下 Markdown 打入交付包，便于外发后新 AI/同事接手。"""
+    src_dir = ROOT / "docs" / "strategic"
+    if not src_dir.is_dir():
+        return
+    dst_dir = dest_root / "docs" / "strategic"
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    for p in sorted(src_dir.glob("*.md")):
+        if p.is_file():
+            shutil.copy2(p, dst_dir / p.name)
+
+
 def _copy_dot_streamlit(dest_root: Path) -> None:
     """将项目根 `.streamlit` 目录原样拷入交付目录（不存在则跳过，不阻断打包）。"""
     src = ROOT / STREAMLIT_DIR
@@ -294,6 +307,8 @@ def main() -> int:
             )
 
         _copy_dot_streamlit(staging)
+
+        _copy_strategic_docs(staging)
 
         _write_release_bat(staging / GENERATED_BAT)
 

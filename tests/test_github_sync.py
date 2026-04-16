@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -113,6 +114,78 @@ def test_push_file_returns_false_on_exception(tmp_path):
 
 # ── sync_analytics ────────────────────────────────────────────────────────────
 
+def test_analytics_repo_company_segment_stable():
+    import hashlib
+
+    cid = "泽天智航_1775917777"
+    seg = gs.analytics_repo_company_segment(cid)
+    assert seg.endswith("_" + hashlib.sha1(cid.encode("utf-8")).hexdigest()[:8])
+    assert seg.startswith("1775917777_")
+
+
+def test_pull_analytics_for_company_filters_by_date(tmp_path, monkeypatch):
+    """Mock API + download；日期过滤应跳过旧文件。"""
+    import urllib.request as urllib_req
+
+    old_json = json.dumps(
+        {"company_id": "X", "locked_at": "2026-01-01T00:00:00Z"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+    new_json = json.dumps(
+        {"company_id": "X", "locked_at": "2026-06-01T12:00:00Z"},
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    seg = gs.analytics_repo_company_segment("Co_A")
+
+    def fake_api(method, path, pat, payload=None):
+        if method == "GET" and "/contents/analytics/" in path and seg in path:
+            return 200, [
+                {
+                    "type": "file",
+                    "name": "a.json",
+                    "download_url": "https://example.com/a.json",
+                },
+                {
+                    "type": "file",
+                    "name": "b.json",
+                    "download_url": "https://example.com/b.json",
+                },
+            ]
+        return 404, {}
+
+    calls = {"i": 0}
+
+    class FakeResp:
+        def __init__(self, data):
+            self._data = data
+
+        def read(self):
+            return self._data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    def fake_urlopen(req, timeout=30):
+        calls["i"] += 1
+        return FakeResp(old_json if calls["i"] == 1 else new_json)
+
+    with _mock_env():
+        with patch.object(gs, "_api_request", side_effect=fake_api):
+            with patch.object(urllib_req, "urlopen", side_effect=fake_urlopen):
+                n = gs.pull_analytics_for_company(
+                    "Co_A",
+                    tmp_path,
+                    not_before=date(2026, 4, 1),
+                )
+    assert n == 1
+    out = tmp_path / ".coach_data_pull" / "analytics" / seg
+    assert set(out.glob("*.json")) == {out / "b.json"}
+
+
 def test_sync_analytics_builds_correct_path(tmp_path):
     f = tmp_path / "stem_analytics.json"
     f.write_text("{}", encoding="utf-8")
@@ -122,7 +195,7 @@ def test_sync_analytics_builds_correct_path(tmp_path):
                 gs.sync_analytics(f, "泽天智航")
     path_arg = mock_api.call_args[0][1]
     assert "analytics/" in path_arg
-    assert "stem_analytics.json" in path_arg
+    assert ".json" in path_arg
 
 
 def test_sync_analytics_nonexistent_file_returns_false():

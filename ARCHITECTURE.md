@@ -97,11 +97,11 @@
 
 - `pytest tests/`：含 `job_pipeline`、`extreme_cases`、`garbage_collector`、`test_v72_backend_override`（V7.2 覆写毒药/越界压测）、**`test_v75_formatter`**（按说话人分段 / 无 `[0]` 式导出）、**`test_v75_json_salvage`**（截断 JSON 抢救）、**`test_v76_asr_cache`**（V7.6 缓存命中 / 跳过 ASR / 落盘一致性，9 case）等。
 - 转写/LLM 集成测试以 mock 为主，避免外网依赖。
-- 全量回归：**262 passed**（当前主干，以 `pytest tests/` 为准；Mock 外部 API）。
+- 全量回归：以 `CHANGELOG.md` 最新条目为准（执行命令：`pytest tests/`；Mock 外部 API）。
 
 ---
 
-*文档版本：V9.6.2 · 与 app.py / `job_pipeline` 当前行为对齐。*
+*文档版本：V10.7.0 · 与 app.py / `job_pipeline` 当前行为对齐。*
 
 ---
 

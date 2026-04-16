@@ -1,4 +1,4 @@
-﻿# 给 AI 助手（Cursor / Claude / 其它）的接手说明
+# 给 AI 助手（Cursor / Claude / 其它）的接手说明
 
 本文件是**跨工具的统一入口**：新会话先读本节「握手区」，再按顺序读架构文档，最后动代码。目标：**减少重复勘探、降低 token、避免踩已修过的坑**。
 
@@ -9,9 +9,9 @@
 | 项目 | 当前事实（以仓库代码为准） |
 |------|---------------------------|
 | **发版号** | `build_release.py` → `CURRENT_VERSION`（现为 **V10.7.0**），纯净包目录名随其变化。 |
-| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。**V10.5✅**：平衡评估（positive_highlights）+质量门槛强化+finalize Toast修复。**V10.6✅**：稳定性五项修复——analytics补写投资人匹配所需字段（high_freq_topics/focus_keywords）；investor_matcher从company_id提取关键词；Pipeline load()状态容错；save()tmp路径修正；CRM Toast修复。**V10.6.1✅**：投资人匹配结果展示 IndentationError 修复。**V10.7.0✅**：融资作战室 MVP——左右分屏备战界面（倒计时+材料清单+历史弱点+DeepSeek教练对话+语音输入+战后包扎），红蓝对抗全量修复 P0~P3（超时锁/发送锁/缓存TTL/Prompt消毒/错误脱敏/Windows临时文件）。 |
-| **回归测试** | `pytest tests/` → 当前全量 **605 passed**（AI Coach）；FSS `cd AI_CangJie_FSS && pytest tests/` → **45 passed**。 |
-| **FOS Sprint 1-6** | 2026-04-13 全部完成。FSS侧：`src/document_intake.py`（体检）、`document_archiver.py`（归档）、`matchmaker_v5.py`（尽调响应V5.0）、`asset_bridge_fss.py`；AI Coach侧：`src/investor_matcher.py`（投资人匹配）、`src/pipeline_tracker.py`（融资CRM）；AI Coach UI新增「🎯投资人匹配」「📋融资Pipeline」页面。路线图见 `docs/strategic/2026-04-13_FOS完整路线图_给新AI.md`。FSS全量66 passed，AI Coach全量605 passed。 |
+| **能力代际** | **V10.1✅**：双态留痕 + Dashboard 4-Tab。**V10.2✅**：机构数据飞轮四件套（会前简报）。**V10.3✅ P0~P3 全完成**：多语言支持+Partner画像+演练模式+客户Dashboard。**V10.4✅**：FOS资产桥接（`src/asset_bridge.py`）——会前简报末尾自动列出「库中相关资产」；修复 env_all_ok 首次启动不需要重点按钮；会前简报 UI 文案优化。**V10.5✅**：平衡评估（positive_highlights）+质量门槛强化+finalize Toast修复。**V10.6✅**：稳定性五项修复——analytics补写投资人匹配所需字段（high_freq_topics/focus_keywords）；investor_matcher从company_id提取关键词；Pipeline load()状态容错；save()tmp路径修正；CRM Toast修复。**V10.6.1✅**：投资人匹配结果展示 IndentationError 修复。**V10.7.0✅**：融资作战室 MVP——左右分屏备战界面（倒计时+材料清单+历史弱点+DeepSeek教练对话+语音输入+战后包扎），红蓝对抗全量修复 P0~P3（超时锁/发送锁/缓存TTL/Prompt消毒/错误脱敏/Windows临时文件）。**2026-04-17 工程增量（非发版号）**：可选 **LangGraph** 评估链；**Agentic UI** 双栏（`agent_runner` 状态透传 + `agentic_ui_helper`）；提取区 **发言人映射** + 可选 **ASR 润色**（`speaker_alias.py`）；**coach_data** 上 **analytics 上传 P0**（`github_sync` 分通道状态 + 中文路径安全化）。**交接说明**：`docs/strategic/2026-04-16_FOS工程现状全景与下一步讨论底稿_给新AI.md` **§17**。 |
+| **回归测试** | `pytest tests/`（AI Coach）与 `cd AI_CangJie_FSS && pytest tests/`（FSS）；通过数以各自仓库 `CHANGELOG.md` 或最新测试实跑结果为准（避免文档硬编码过期）。**AI Coach 最近全量**：约 **637 passed**（2026-04-17，以实跑为准）。 |
+| **FOS Sprint 1-6** | 2026-04-13 全部完成。FSS侧：`src/document_intake.py`（体检）、`document_archiver.py`（归档）、`matchmaker_v5.py`（尽调响应V5.0）、`asset_bridge_fss.py`；AI Coach侧：`src/investor_matcher.py`（投资人匹配）、`src/pipeline_tracker.py`（融资CRM）；AI Coach UI新增「🎯投资人匹配」「📋融资Pipeline」页面。路线图见 `docs/strategic/2026-04-13_FOS完整路线图_给新AI.md`。FSS全量以该仓库实跑为准；AI Coach 全量见上行。 |
 | **Claude 专用** | 若使用 Claude Code，**额外**读根目录 **`CLAUDE.md`**（四大铁律：红蓝对抗、TDD、Streamlit 状态机、JSON 抢救）。其它模型也建议扫一眼铁律三、四。 |
 | **人类操作** | **`小白保姆级操作手册.md`**（界面步骤）。 |
 | **姊妹项目 FSS** | `D:\AI_Workspaces\AI_CangJie_FSS`（仓颉资产台账系统，GitHub: `bog5d/CangJie-Asset-Console`）。核心文件：`资产控制台主程序.py`（V4.0 主程序）、`cangjie_kimiv2.py`（轻量版）。两系统通过 `D:\AI_Workspaces\.fos_data\asset_index.json` 交换资产清单数据（FSS写入，AI Coach读取）。**改FSS代码前先读该目录的 `更新日志.md`**。 |
@@ -48,7 +48,11 @@
 | 数据契约 | `src/schema.py` | 含 **`needs_refinement`**、**`refinement_note`**、**`ExecutiveMemory`**（V8.6）；改字段需六向联动 |
 | 大文件音频 | `src/audio_preprocess.py` | ≥10MB 网关 |
 | 路径与可写根 | src/runtime_paths.py | .env、debug.log、Workspace；**V10.0** 新增 get_memory_root()（读 MEMORY_ROOT）/ get_asr_cache_root()（读 CACHE_ROOT） |
-| **Analytics 导出** | src/analytics_exporter.py | **V10.0 新模块**；export_analytics(report, ctx) 锁定时静默生成 {stem}_analytics.json；失败返回 None 不抛异常；在 pp.py::_v3_finalize_stem 末尾调用 |
+| **Analytics 导出** | src/analytics_exporter.py | **V10.0 新模块**；export_analytics(report, ctx) 锁定时静默生成 {stem}_analytics.json；失败返回 None 不抛异常；在 `app.py::_v3_finalize_stem` 末尾调用 |
+| **GitHub coach_data 同步** | `src/github_sync.py` | 锁定后 `sync_analytics`；`sync_institutions`；**显式拉取**：`pull_analytics_for_company`（仅当前 `company_id` 对应 segment）→ 工作区 `.coach_data_pull/analytics/{segment}/`；清单见 `docs/strategic/2026-04-17_coach_data_上传下载清单与操作流程.md` |
+| **LangGraph 评估** | `src/agent_*.py`、`src/job_pipeline.py` | `USE_LANGGRAPH_V1` / `PitchFileJobParams.use_langgraph_v1`；`agent_state_collector` 回调供 UI |
+| **Agentic UI 规则** | `src/agentic_ui_helper.py` | `build_action_specs` 等；`app.py` 双栏与审查台锚点联动 |
+| **发言人展示映射** | `src/speaker_alias.py` | 仅影响 plain 文本标签，不篡改词级 speaker_id |
 
 ---
 
@@ -64,7 +68,7 @@
 
 ## 4. 测试与回归
 
-- `pytest tests/`（全量，当前 **262 passed**）
+- `pytest tests/`（全量；通过数以 `CHANGELOG.md` 最新条目或实跑结果为准）
 - 根目录：`pytest test_v7_acceptance.py`（若存在）
 - V7.2 覆写：`tests/test_v72_backend_override.py`
 - V7.5：`tests/test_v75_formatter.py`、`tests/test_v75_json_salvage.py`
@@ -81,6 +85,9 @@
 
 | 文档 | 用途 |
 |------|------|
+| `docs/strategic/2026-04-16_FOS工程现状全景与下一步讨论底稿_给新AI.md` | **工程全景 + 时间切片**；**§17** = Agentic UI、转写 UX、`coach_data` P0 + **§17.5 显式拉取** |
+| `docs/strategic/2026-04-17_coach_data_上传下载清单与操作流程.md` | **coach_data 上/下载清单、多机流程、公司隔离** |
+| `docs/strategic/2026-04-17_系统稳健性检视摘要_给新AI.md` | **已知薄弱点、外发包边界、接手自检** |
 | `README.md` | 功能总览、Quick Start |
 | `PACKAGING_EXE.md` | EXE / 纯净包 |
 | `写给同事的使用说明书.txt` | 同事向说明 |

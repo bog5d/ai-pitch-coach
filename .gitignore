@@ -42,6 +42,9 @@ Thumbs.db
 # Logs & local env
 *.log
 
+# 本机 GitHub coach_data 同步状态（勿入库，避免多机冲突与误报）
+github_sync_status.json
+
 # --- AI Pitch Coach Specific Ignores ---
 # V7.0 审查台本地草稿（用户机器上的断线恢复数据，勿入库）
 .drafts/

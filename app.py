@@ -54,6 +54,11 @@ from openai import APIError, OpenAI
 load_dotenv(_ENV_PATH)
 
 from audio_filename_hints import guess_batch_fields_from_stem, should_autofill_iv, stem_from_audio_filename
+from agentic_ui_helper import (
+    build_action_specs,
+    infer_risk_level,
+    resolve_focus_target,
+)
 from audio_preprocess import smart_compress_media
 from document_reader import extract_text_from_files
 from job_pipeline import (
@@ -67,8 +72,10 @@ from job_pipeline import (
     safe_fs_segment,
 )
 from sensitive_words import parse_sensitive_words
+from speaker_alias import alias_plain_label, ordered_speaker_ids, speaker_label_map
 import company_profile as cp
 from schema import CompanyProfile
+from asr_polish import polish_transcription_text
 from llm_judge import detect_logical_conflict, polish_manual_risk_point, refine_risk_point
 from transcriber import format_transcript_plain_by_speaker, transcribe_audio
 from report_builder import (
@@ -84,7 +91,12 @@ from benchmark_engine import build_benchmark, scan_analytics_files
 from institution_registry import fuzzy_match as institution_fuzzy_match, resolve as institution_resolve, get_all as get_all_institutions, increment_session_count as institution_inc_session
 from institution_profiler import list_all_institution_profiles, build_institution_profile
 from briefing_engine import generate_briefing_data, generate_briefing_text
-from github_sync import sync_analytics as github_sync_analytics, sync_institutions as github_sync_institutions
+from github_sync import (
+    analytics_repo_company_segment,
+    pull_analytics_for_company,
+    sync_analytics as github_sync_analytics,
+    sync_institutions as github_sync_institutions,
+)
 
 _SCENE_SELECT_PLACEHOLDER = "—— 请先选择业务场景 ——"
 
@@ -209,7 +221,7 @@ def _v86_render_executive_dashboard(company_id: str, workspace_root: str = "") -
     # Tab 5：机构画像 — 跨公司投资机构分析（V10.2）
     # ════════════════════════════════════════════════
     with tab5:
-        _render_institution_profiles(ws_path)
+        _render_institution_profiles(ws_path, company_id)
 
     # ════════════════════════════════════════════════
     # Tab 6：会前演练 — AI 扮投资人，实时问答评分（V10.3 P2.1）
@@ -707,25 +719,66 @@ def _render_sync_status_alert() -> None:
                 " `COACH_DATA_GITHUB_REPO`，数据仅保存在本地，无法跨设备汇聚。",
                 icon="⚠️",
             )
-        elif s["needs_alert"]:
+        elif s.get("analytics", {}).get("needs_alert"):
             st.error(
-                f"🔴 **GitHub 同步连续失败 {s['consecutive_failures']} 次**"
-                f"（最后错误：{s.get('last_error', '未知')}）。"
-                "数据未同步到 coach_data repo，请检查 PAT 是否过期或网络是否正常。"
-                f"上次成功：{s.get('last_success') or '从未成功'}",
+                f"🔴 **Analytics 同步连续失败 {s['analytics'].get('consecutive_failures', 0)} 次**"
+                f"（最后错误：{s['analytics'].get('last_error', '未知')}）。"
+                "机构画像与偏好沉淀会不完整，请检查 PAT/REPO 配置与网络。",
             )
-        elif s.get("last_success"):
-            st.caption(f"☁️ 上次同步成功：{s['last_success']}")
+        elif s.get("analytics", {}).get("last_success"):
+            st.caption(f"☁️ Analytics 上次同步成功：{s['analytics']['last_success']}")
+        if s.get("institutions", {}).get("needs_alert"):
+            st.warning(
+                f"🟡 institutions 同步连续失败 {s['institutions'].get('consecutive_failures', 0)} 次："
+                f"{s['institutions'].get('last_error', '未知')}"
+            )
     except Exception:
         pass  # 告警本身不影响主流程
 
 
-def _render_institution_profiles(ws_path: Path) -> None:
+def _render_institution_profiles(ws_path: Path, company_id: str = "") -> None:
     """V10.3 Tab 5：机构画像全览 + 会前简报 + 同步状态告警。"""
     import plotly.express as px
+    from datetime import date as _date
 
     # P0.3：同步状态告警
     _render_sync_status_alert()
+
+    with st.expander("☁️ coach_data：拉取本公司 analytics（显式同步）", expanded=False):
+        st.caption(
+            "从 `.env` 配置的私有仓库 **coach_data** 中，仅下载**当前侧栏项目**对应的 "
+            "`analytics/{segment}/` 下 JSON，写入本机工作区目录 "
+            "`.coach_data_pull/analytics/{segment}/`（与上传路径 segment 一致）。"
+            "机构画像与会前简报会 **rglob 扫描整个工作区**，拉取后的文件可被聚合使用。"
+        )
+        _cid_pull = (company_id or "").strip()
+        if not _cid_pull:
+            st.warning("请先在侧栏选择项目档案。")
+        else:
+            _use_nb = st.checkbox(
+                "仅拉取 locked_at / generated_at **日期** ≥ 所选日的记录",
+                value=False,
+                key="v102_pull_analytics_use_not_before",
+            )
+            _nb: _date | None = None
+            if _use_nb:
+                _nb = st.date_input("起始日期（含当天）", value=_date.today(), key="v102_pull_analytics_not_before")
+            if st.button("⬇️ 拉取本公司 analytics", key="v102_pull_company_analytics"):
+                try:
+                    n = pull_analytics_for_company(
+                        _cid_pull,
+                        ws_path,
+                        not_before=_nb if _use_nb else None,
+                    )
+                    _seg = analytics_repo_company_segment(_cid_pull)
+                    _dest = ws_path / ".coach_data_pull" / "analytics" / _seg
+                    if n:
+                        st.success(f"已写入 **{n}** 个文件到 `{_dest}`")
+                    else:
+                        st.info("未写入新文件（远端无目录、无匹配 JSON、或日期过滤后为空）。请确认他机已锁定上传且 `.env` 中 coach_data 配置一致。")
+                except Exception as ex:
+                    logging.getLogger("ai_pitch_coach.ui").exception("拉取本公司 analytics")
+                    st.error(f"拉取失败：{ex!s}")
 
     st.divider()
     st.subheader("🏦 投资机构画像")
@@ -1285,12 +1338,16 @@ def _v3_finalize_stem(stem: str) -> tuple[Path, int]:
             institution_inc_session(_iid)
         except Exception:
             pass
-        if analytics_path:
-            try:
-                github_sync_analytics(analytics_path, _cid)
-                github_sync_institutions()
-            except Exception:
-                pass
+    if analytics_path:
+        try:
+            github_sync_analytics(analytics_path, _cid)
+        except Exception:
+            pass
+    if _iid:
+        try:
+            github_sync_institutions()
+        except Exception:
+            pass
 
     return final, harvest_n
 
@@ -1362,9 +1419,10 @@ def _v3_render_single_stem_review(stem: str) -> None:
     for idx, rp in enumerate(list(rps)):
         rid = _v3_ensure_rid(rp)
         is_manual = bool(rp.get("is_manual_entry", False))
+        focus_rid = str(st.session_state.get(f"agentic_focus_rid_{stem}") or "")
         with st.expander(
             f"片段 #{idx + 1} · {'人工增补' if is_manual else 'AI 提取'} · {rid}",
-            expanded=False,
+            expanded=bool(focus_rid and focus_rid == rid),
         ):
             # ── 默认展示：4 个核心字段 ──
             st.selectbox(
@@ -1803,7 +1861,10 @@ def _v71_transcribe_upload_to_plain(
     uf,
     *,
     on_line: Callable[[str], None] | None = None,
-) -> str:
+    enable_polish: bool = True,
+    company_background: str = "",
+    industry_hot_words: list[str] | None = None,
+) -> tuple[str, list[TranscriptionWord]]:
     """仅转写上传文件为可读纯文本，并将结果存入 ASR 内存缓存。
     缓存命中时直接返回，跳过云端调用；点击「生成报告」时主流程可复用同一缓存。
 
@@ -1824,7 +1885,10 @@ def _v71_transcribe_upload_to_plain(
             f"✅ 命中本页会话内的转写缓存（原文件约 **{orig_mb:.2f} MB**），"
             "跳过压缩与云端转写，直接展示已缓存文字稿。"
         )
-        return asr_cache[file_hash]["plain"]
+        cached_words = [
+            TranscriptionWord.model_validate(w) for w in (asr_cache[file_hash].get("words") or [])
+        ]
+        return asr_cache[file_hash]["plain"], cached_words
 
     _ln(f"📥 原始上传：**{orig_mb:.2f} MB** · `{uf.name}`")
 
@@ -1866,12 +1930,20 @@ def _v71_transcribe_upload_to_plain(
                 )
         _ln("⏱️ 正在调用云端转写，请稍候…")
         words = transcribe_audio(work, out_json_path=None)
-        plain = format_transcript_plain_by_speaker(words)
+        words_show = list(words)
+        if enable_polish:
+            words_show = polish_transcription_text(
+                words_show,
+                company_background=company_background,
+                industry_hot_words=industry_hot_words,
+                on_notice=on_line,
+            )
+        plain = format_transcript_plain_by_speaker(words_show)
         asr_cache[file_hash] = {
             "words": [w.model_dump() for w in words],
             "plain": plain,
         }
-        return plain
+        return plain, words
     finally:
         for p in paths:
             try:
@@ -2624,6 +2696,130 @@ def _render_warroom_page(company_id: str, workspace: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _latest_review_stem() -> str | None:
+    stems: list[str] = st.session_state.get("v3_review_stems") or []
+    return stems[-1] if stems else None
+
+
+def _agentic_append_chat(stem: str, role: str, content: str) -> None:
+    key_hist = f"agentic_chat_history_{stem}"
+    if key_hist not in st.session_state:
+        st.session_state[key_hist] = []
+    st.session_state[key_hist].append({"role": role, "content": content})
+
+
+def _agentic_run_briefing(stem: str) -> str:
+    ctx = st.session_state.get(f"v3_ctx_{stem}") or {}
+    institution_id = str(ctx.get("institution_id") or "").strip()
+    company_id = str(ctx.get("company_id") or "").strip()
+    if not institution_id or not company_id:
+        return "⚠️ 无法生成简报：缺少 institution_id 或 company_id，请先在审查台确认上下文。"
+    institution_name = str(ctx.get("institution_canonical") or "").strip()
+    company_name = str(ctx.get("project_name") or "").strip()
+    return generate_briefing_text(
+        institution_id=institution_id,
+        company_id=company_id,
+        workspace_root=get_writable_app_root(),
+        company_name=company_name,
+        institution_name=institution_name,
+    )
+
+
+def _agentic_dispatch_action(stem: str, action: dict[str, str]) -> tuple[bool, str]:
+    kind = str(action.get("kind") or "")
+    label = str(action.get("label") or "未命名动作")
+    prompt = str(action.get("prompt") or label)
+    if kind == "briefing":
+        text = _agentic_run_briefing(stem)
+        _agentic_append_chat(stem, "assistant", text)
+        return True, "会前简报已生成"
+    if kind == "focus_risk":
+        rid = str(action.get("target_rid") or "")
+        st.session_state[f"agentic_focus_rid_{stem}"] = rid
+        target = resolve_focus_target(st.session_state.get(f"report_draft_{stem}") or {}, rid)
+        target_name = str((target or {}).get("risk_type") or "目标风险")
+        _agentic_append_chat(stem, "user", prompt)
+        _agentic_append_chat(stem, "assistant", f"已定位到风险锚点：**{target_name}**，请在审查台查看展开项。")
+        return True, f"已定位风险：{target_name}"
+    _agentic_append_chat(stem, "user", prompt)
+    _agentic_append_chat(stem, "assistant", "已触发该动作，我会围绕该指令继续辅助你完善审查台内容。")
+    return True, "动作已写入对话"
+
+
+def _render_agentic_dual_brain(stem: str) -> None:
+    draft = st.session_state.get(f"report_draft_{stem}") or {}
+    agent_state = st.session_state.get(f"agent_state_{stem}") or {}
+    focus_rid = str(st.session_state.get(f"agentic_focus_rid_{stem}") or "")
+
+    left, right = st.columns([7, 3])
+    with left:
+        st.markdown("### 🧠 Agentic 动态画布")
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("资产命中", len(agent_state.get("asset_hits") or []))
+            c2.metric("记忆事件", len(agent_state.get("memory_events") or []))
+            c3.metric(
+                "脱敏命中",
+                int((agent_state.get("sanitization_meta") or {}).get("redaction_count", 0)),
+            )
+            c4.metric("风险点", len(draft.get("risk_points") or []))
+
+        with st.container(border=True):
+            st.markdown("#### 📁 资产线索")
+            md = (agent_state.get("asset_summary_markdown") or "").strip()
+            if md:
+                st.markdown(md)
+            else:
+                st.caption("当前未命中参考资产。")
+
+        with st.container(border=True):
+            st.markdown("#### 🚦 风险红绿灯")
+            rps = draft.get("risk_points") or []
+            if not rps:
+                st.success("当前草稿未检出风险点。")
+            else:
+                for rp in rps[:5]:
+                    rid = str((rp or {}).get("_rid") or "")
+                    ded = int((rp or {}).get("score_deduction", 0) or 0)
+                    level = infer_risk_level(ded)
+                    icon = "🔴" if level == "high" else ("🟡" if level == "medium" else "🟢")
+                    title = str((rp or {}).get("risk_type") or "未分类风险")
+                    reason = str((rp or {}).get("deduction_reason") or "").strip()
+                    if focus_rid and focus_rid == rid:
+                        st.markdown(f"{icon} **{title}**（扣分 {ded}） `← 当前锚点`")
+                    else:
+                        st.markdown(f"{icon} **{title}**（扣分 {ded}）")
+                    if reason:
+                        st.caption(reason[:120] + ("…" if len(reason) > 120 else ""))
+
+    with right:
+        st.markdown("### 🤖 AI 教练对话")
+        key_hist = f"agentic_chat_history_{stem}"
+        if key_hist not in st.session_state:
+            st.session_state[key_hist] = [
+                {"role": "assistant", "content": "我会基于当前资产线索与风险点给你下一步动作建议。"}
+            ]
+        for msg in st.session_state[key_hist][-6:]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        st.markdown("#### ⚡ 推荐动作")
+        actions = build_action_specs(agent_state, draft)
+        for idx, action in enumerate(actions):
+            label = str(action.get("label") or f"动作{idx+1}")
+            if st.button(label, key=f"agentic_action_{stem}_{idx}", use_container_width=True):
+                ok, msg = _agentic_dispatch_action(stem, action)
+                if ok:
+                    st.toast(msg, icon="⚡")
+                st.rerun()
+
+        user_msg = st.chat_input("给 AI 教练下达一个动作指令…", key=f"agentic_chat_input_{stem}")
+        if user_msg:
+            _agentic_append_chat(stem, "user", user_msg)
+            _agentic_append_chat(stem, "assistant", "收到。当前为本地雏形对话区，可结合审查台执行该动作。")
+            st.rerun()
+
+
 def main() -> None:
     st.set_page_config(
         page_title="AI 路演与访谈复盘系统",
@@ -2637,6 +2833,10 @@ def main() -> None:
         st.session_state.session_id = str(uuid.uuid4())
     if "v86_dashboard_mode" not in st.session_state:
         st.session_state["v86_dashboard_mode"] = False
+    if "USE_LANGGRAPH_V1" not in st.session_state:
+        st.session_state["USE_LANGGRAPH_V1"] = os.environ.get(
+            "USE_LANGGRAPH_V1", ""
+        ).strip().lower() in ("1", "true", "yes")
 
     # V8.4 域字典初始化
     if "current_company_cache" not in st.session_state:
@@ -2905,6 +3105,16 @@ def main() -> None:
             st.caption(
                 "⚠️ 须点击「保存并测试连接」直至阿里云、DeepSeek、FFmpeg 全部通过后方可生成报告。"
             )
+
+        st.toggle(
+            "实验：LangGraph V1 评估链路",
+            value=bool(st.session_state.get("USE_LANGGRAPH_V1", False)),
+            help=(
+                "开启后「生成复盘」走 LangGraph 编排（Week 1 仍委托原 evaluate_pitch，"
+                "便于灰度与可观测扩展）。也可设环境变量 USE_LANGGRAPH_V1=1 默认开启。"
+            ),
+            key="USE_LANGGRAPH_V1",
+        )
 
         if "sensitive_words_raw" not in st.session_state:
             st.session_state.sensitive_words_raw = "福创投, 迪策, 净利润"
@@ -3221,6 +3431,18 @@ def main() -> None:
 
     if "v71_plain_body" not in st.session_state:
         st.session_state["v71_plain_body"] = ""
+    if "v71_plain_body_raw" not in st.session_state:
+        st.session_state["v71_plain_body_raw"] = ""
+    if "v71_plain_words" not in st.session_state:
+        st.session_state["v71_plain_words"] = []
+    if "v71_enable_polish" not in st.session_state:
+        st.session_state["v71_enable_polish"] = True
+
+    st.checkbox(
+        "提取文字稿时执行错别字轻修正（不改时间轴）",
+        key="v71_enable_polish",
+        help="建议开启：会调用现有 ASR 轻量润色链路，减少明显常识错字。",
+    )
 
     if st.button(
         "📄 仅提取文字稿 (提取后可复制原话进行精准核实)",
@@ -3242,8 +3464,22 @@ def main() -> None:
                     def _v71_line(msg: str) -> None:
                         v71_status.write(msg)
 
-                    plain = _v71_transcribe_upload_to_plain(uf0, on_line=_v71_line)
+                    _hot_words_raw = str(st.session_state.get("v80_hot_words_raw") or "")
+                    _hot_words = [
+                        w.strip()
+                        for w in _hot_words_raw.replace("，", ",").replace("；", ",").split(",")
+                        if w.strip()
+                    ] or None
+                    plain, words_for_alias = _v71_transcribe_upload_to_plain(
+                        uf0,
+                        on_line=_v71_line,
+                        enable_polish=bool(st.session_state.get("v71_enable_polish", True)),
+                        company_background=str(st.session_state.get("company_background", "") or ""),
+                        industry_hot_words=_hot_words,
+                    )
+                st.session_state["v71_plain_body_raw"] = plain
                 st.session_state["v71_plain_body"] = plain
+                st.session_state["v71_plain_words"] = [w.model_dump() for w in words_for_alias]
                 st.success(
                     f"已提取约 **{len(plain)}** 字，可复制到上方对应录音的「原文引用」列。"
                 )
@@ -3258,6 +3494,31 @@ def main() -> None:
         help="先点击上方按钮；按说话人分段的文字可粘贴到狙击清单「原文引用」列以降低切片错位。",
     )
 
+    _plain_words_raw = st.session_state.get("v71_plain_words") or []
+    _iv0 = (st.session_state.get("batch_iv_0") or "").strip()
+    if _plain_words_raw and _iv0:
+        _plain_words = [TranscriptionWord.model_validate(x) for x in _plain_words_raw]
+        _sid_order = ordered_speaker_ids(_plain_words)
+        _sid_to_label = speaker_label_map(_plain_words)
+        _label_options = ["（自动判断）"] + [_sid_to_label[sid] for sid in _sid_order]
+        _pick = st.selectbox(
+            f"被访谈人「{_iv0}」对应说话人",
+            options=_label_options,
+            key="v71_iv_speaker_pick_0",
+            help="用于修正展示标签并注入评估上下文，避免把投资人台词打到发言人身上。",
+        )
+        if _pick != "（自动判断）":
+            st.session_state["v71_speaker_hint_0"] = _pick
+            st.session_state["v71_plain_body"] = alias_plain_label(
+                str(st.session_state.get("v71_plain_body_raw") or ""),
+                _pick,
+                _iv0,
+            )
+            st.caption(f"已应用身份映射：{_iv0} -> {_pick}")
+        else:
+            st.session_state["v71_speaker_hint_0"] = ""
+            st.session_state["v71_plain_body"] = str(st.session_state.get("v71_plain_body_raw") or "")
+
     run = st.button(
         "开始生成复盘报告",
         type="primary",
@@ -3268,6 +3529,10 @@ def main() -> None:
         st.info("配置侧边栏与业务场景，上传音频后点击按钮开始。")
         if st.session_state.get("v3_review_stems"):
             st.divider()
+            _stem = _latest_review_stem()
+            if _stem:
+                _render_agentic_dual_brain(_stem)
+                st.divider()
             _v3_render_review_workbench()
         return
 
@@ -3465,12 +3730,16 @@ def main() -> None:
 
                     per_iv = (st.session_state.get(f"batch_iv_{i}") or "").strip()
                     sniper_json = _batch_sniper_targets_json(i)
+                    speaker_hint = (st.session_state.get(f"v71_speaker_hint_{i}") or "").strip()
+                    session_notes = ""
+                    if per_iv and speaker_hint:
+                        session_notes = f"身份映射提示：被访谈人「{per_iv}」= {speaker_hint}。"
 
                     explicit_context = build_explicit_context(
                         category,
                         project_name,
                         per_iv,
-                        session_notes="",
+                        session_notes=session_notes,
                         sniper_targets_json=sniper_json,
                         recording_label=fname,
                         custom_roles_other=custom_roles,
@@ -3483,6 +3752,7 @@ def main() -> None:
                     html_path = target_dir / html_name
 
                     qa_text = batch_qa_texts[i]
+                    _agent_state_box: dict = {}
 
                     params = PitchFileJobParams(
                         transcription_json_path=trans_json,
@@ -3496,6 +3766,10 @@ def main() -> None:
                         hot_words=hot_words,
                         company_background=current_company_bg,
                         memory_company_id=mem_cid,
+                        use_langgraph_v1=bool(
+                            st.session_state.get("USE_LANGGRAPH_V1", False)
+                        ),
+                        agent_state_collector=lambda d: _agent_state_box.update(d or {}),
                     )
 
                     def _pipe_status(m: str) -> None:
@@ -3544,6 +3818,7 @@ def main() -> None:
                     st.session_state[f"report_draft_{stem}"] = draft
                     st.session_state[f"v3_initial_report_{stem}"] = copy.deepcopy(draft)
                     st.session_state[f"words_{stem}"] = [w.model_dump() for w in words]
+                    st.session_state[f"agent_state_{stem}"] = dict(_agent_state_box)
                     _draft_ctx = {
                         "audio_path": str(audio_path),
                         "analysis_json": str(analysis_json),

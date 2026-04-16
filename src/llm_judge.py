@@ -18,6 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, List
 
 from dotenv import load_dotenv
@@ -875,27 +876,37 @@ def deep_evaluate_single_risk(
     )
 
 
-def evaluate_pitch(
+@dataclass
+class PitchEvalContext:
+    """两阶段 pitch 评估的共享中间上下文（供 LangGraph 多节点与单函数入口复用）。"""
+
+    words: List[TranscriptionWord]
+    transcript: str
+    qa_use: str
+    bg_use: str
+    lang_hint: str
+    detected_lang: str
+    model_choice: str
+    explicit_context: dict[str, Any] | None
+    on_notice: Callable[[str], None] | None
+    historical_memories: list[ExecutiveMemory] | None
+    asset_reference_markdown: str
+
+
+def prepare_pitch_evaluation_context(
     words: List[TranscriptionWord],
-    model_choice: str = "deepseek",
+    model_choice: str,
     *,
     explicit_context: dict[str, Any] | None = None,
     qa_text: str = "",
     company_background: str = "",
     on_notice: Callable[[str], None] | None = None,
     historical_memories: list[ExecutiveMemory] | None = None,
-) -> AnalysisReport:
-    """
-    V9.6：两阶段评估 — 先 scan_risk_targets（找靶子），再对每靶点 deep_evaluate_single_risk（单点爆破）。
-    explicit_context 建议包含：biz_type, exact_roles, project_name, interviewee；
-    可选 session_notes（本段备注）、recording_label（录音文件名标识）。
-    """
+    asset_reference_markdown: str = "",
+) -> PitchEvalContext:
     if model_choice not in JUDGE_MODEL_KEYS:
         raise ValueError('model_choice 必须是 "deepseek"、"kimi" 或 "qwen"')
 
-    _stage1_truncated = False
-
-    # V10.3 P3.3 — 语言检测（采样前 200 词，零依赖）
     _detected_lang = detect_language_from_words(words)
     _lang_hint = get_language_prompt_hint(_detected_lang)
     if _detected_lang == "en":
@@ -926,31 +937,58 @@ def evaluate_pitch(
                 logger.exception("on_notice 回调失败")
 
     bg_use, _ = truncate_company_background(company_background or "")
+    asset_ref = (asset_reference_markdown or "").strip()
+    if len(asset_ref) > 1200:
+        asset_ref = asset_ref[:1200] + "…"
 
+    return PitchEvalContext(
+        words=words,
+        transcript=transcript,
+        qa_use=qa_use,
+        bg_use=bg_use,
+        lang_hint=_lang_hint,
+        detected_lang=_detected_lang,
+        model_choice=model_choice,
+        explicit_context=explicit_context,
+        on_notice=on_notice,
+        historical_memories=historical_memories,
+        asset_reference_markdown=asset_ref,
+    )
+
+
+def run_phase1_risk_scan(ctx: PitchEvalContext) -> tuple[RiskScanResult, bool]:
+    _stage1_truncated = False
     scan_schema = json.dumps(RiskScanResult.model_json_schema(), ensure_ascii=False)
+    _qa_for_scan = (ctx.qa_use or "").strip()
+    if ctx.asset_reference_markdown:
+        _qa_for_scan = (
+            (_qa_for_scan + "\n\n" if _qa_for_scan else "")
+            + "以下为库中现有参考资产（仅作核实线索，禁止捏造不存在事实）：\n"
+            + ctx.asset_reference_markdown
+        )
     scan_system = _build_risk_scan_system_prompt(
         scan_schema,
-        explicit_context,
-        qa_use,
-        bg_use,
-        historical_memories=historical_memories,
-    ) + _lang_hint  # P3.3: 英文访谈时追加语言指令
+        ctx.explicit_context,
+        _qa_for_scan,
+        ctx.bg_use,
+        historical_memories=ctx.historical_memories,
+    ) + ctx.lang_hint
 
     _scan_user_prefix = (
         "The following is the interview transcript (each word prefixed with [index]):\n\n"
-        if _detected_lang == "en"
+        if ctx.detected_lang == "en"
         else "以下是本场沟通转写（每个词前有 [索引]，targets 中索引必须来自这些锚点）：\n\n"
     )
-    scan_user = _scan_user_prefix + transcript
+    scan_user = _scan_user_prefix + ctx.transcript
 
-    client, model_name = _make_client(model_choice)
+    client, model_name = _make_client(ctx.model_choice)
     max_tokens = MAX_COMPLETION_TOKENS_BY_MODEL.get(model_name, 8192)
 
     logger.info(
         "V9.6 两阶段评估: scan router_key=%s model=%s 词数=%d",
-        model_choice,
+        ctx.model_choice,
         model_name,
-        len(words),
+        len(ctx.words),
     )
 
     t_api0 = time.monotonic()
@@ -971,7 +1009,7 @@ def evaluate_pitch(
         scan_resp = run_with_backoff(
             _scan_chat,
             logger=logger,
-            operation=f"risk_scan ({model_choice})",
+            operation=f"risk_scan ({ctx.model_choice})",
         )
     except APIError as e:
         logger.exception("阶段一扫描 API 失败")
@@ -994,7 +1032,6 @@ def evaluate_pitch(
     try:
         scan = RiskScanResult.model_validate_json(raw_scan)
     except (ValidationError, Exception) as e:
-        # 尝试从截断 JSON 中抢救 scene_analysis + targets
         scan = _salvage_risk_scan_result(raw_scan, e)
         if scan is None:
             logger.error("RiskScanResult 无法抢救: %s\n原始: %s", e, raw_scan[:2000])
@@ -1002,44 +1039,54 @@ def evaluate_pitch(
         warn_msg = "⚠️ 阶段一扫描结果 JSON 被截断，已抢救 scene_analysis，靶点列表可能不完整。"
         logger.warning(warn_msg)
         _stage1_truncated = True
-        if callable(on_notice):
+        if callable(ctx.on_notice):
             try:
-                on_notice(warn_msg)
+                ctx.on_notice(warn_msg)
             except Exception:
                 pass
 
-    n_words = len(words)
+    return scan, _stage1_truncated
 
-    # 预处理靶点：clamp 索引并过滤越界项，保留原始序号供结果排序
+
+def run_phase2_deep_eval_and_assemble_report(
+    ctx: PitchEvalContext,
+    scan: RiskScanResult,
+    stage1_truncated: bool,
+) -> AnalysisReport:
+    n_words = len(ctx.words)
+
     valid_targets: list[tuple[int, RiskTargetCandidate]] = []
     for i, t in enumerate(scan.targets):
         span = _clamp_word_span(t.start_word_index, t.end_word_index, n_words)
         if span is None:
             continue
         sw, ew = span
-        valid_targets.append((i, RiskTargetCandidate(
-            start_word_index=sw,
-            end_word_index=ew,
-            problem_description=t.problem_description,
-            risk_type=t.risk_type,
-        )))
+        valid_targets.append(
+            (
+                i,
+                RiskTargetCandidate(
+                    start_word_index=sw,
+                    end_word_index=ew,
+                    problem_description=t.problem_description,
+                    risk_type=t.risk_type,
+                ),
+            )
+        )
 
-    # 并发深评：每个靶点独立 LLM 调用，I/O 密集型，线程安全
-    # 最多 6 路并发（防止同时涌入过多 API 请求导致限流）
     max_workers = min(len(valid_targets), 6) if valid_targets else 1
     results: dict[int, RiskPoint] = {}
 
     def _eval_one(idx: int, tc: RiskTargetCandidate) -> tuple[int, RiskPoint | None]:
         try:
             rp = deep_evaluate_single_risk(
-                words,
+                ctx.words,
                 tc,
-                model_choice=model_choice,
-                explicit_context=explicit_context,
-                qa_text=qa_use,
-                company_background=bg_use,
-                historical_memories=historical_memories,
-                lang_hint=_lang_hint,  # P3.3: 英文访谈时传入语言指令
+                model_choice=ctx.model_choice,
+                explicit_context=ctx.explicit_context,
+                qa_text=ctx.qa_use,
+                company_background=ctx.bg_use,
+                historical_memories=ctx.historical_memories,
+                lang_hint=ctx.lang_hint,
             )
             return idx, rp
         except Exception:
@@ -1053,7 +1100,6 @@ def evaluate_pitch(
             if rp is not None:
                 results[idx] = rp
 
-    # 按原始靶点顺序排列（保证报告稳定性）
     risk_points: list[RiskPoint] = [results[idx] for idx in sorted(results.keys())]
 
     total_ded = sum(int(r.score_deduction or 0) for r in risk_points)
@@ -1069,14 +1115,42 @@ def evaluate_pitch(
         risk_points=risk_points,
     )
 
-    if _stage1_truncated:
+    if stage1_truncated:
         _note = "⚠️【阶段一扫描被截断】风险点列表可能不完整，建议重试或缩短录音。"
         _existing = (report.total_score_deduction_reason or "").strip()
-        report = report.model_copy(update={
-            "total_score_deduction_reason": (_note + " " + _existing).strip()
-        })
+        report = report.model_copy(
+            update={"total_score_deduction_reason": (_note + " " + _existing).strip()}
+        )
 
     return report
+
+
+def evaluate_pitch(
+    words: List[TranscriptionWord],
+    model_choice: str = "deepseek",
+    *,
+    explicit_context: dict[str, Any] | None = None,
+    qa_text: str = "",
+    company_background: str = "",
+    on_notice: Callable[[str], None] | None = None,
+    historical_memories: list[ExecutiveMemory] | None = None,
+) -> AnalysisReport:
+    """
+    V9.6：两阶段评估 — 先 scan_risk_targets（找靶子），再对每靶点 deep_evaluate_single_risk（单点爆破）。
+    explicit_context 建议包含：biz_type, exact_roles, project_name, interviewee；
+    可选 session_notes（本段备注）、recording_label（录音文件名标识）。
+    """
+    ctx = prepare_pitch_evaluation_context(
+        words,
+        model_choice,
+        explicit_context=explicit_context,
+        qa_text=qa_text,
+        company_background=company_background,
+        on_notice=on_notice,
+        historical_memories=historical_memories,
+    )
+    scan, stage1_truncated = run_phase1_risk_scan(ctx)
+    return run_phase2_deep_eval_and_assemble_report(ctx, scan, stage1_truncated)
 
 
 def distill_executive_memory_from_diff(

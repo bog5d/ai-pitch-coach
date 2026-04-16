@@ -10,11 +10,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_runner import (
+    run_pitch_evaluation_via_langgraph,
+    run_pitch_evaluation_via_langgraph_with_state,
+)
 from asr_polish import polish_transcription_text
 from llm_judge import _is_valid_risk_point, evaluate_pitch, truncate_company_background
 from memory_engine import (
@@ -131,6 +136,8 @@ class PitchFileJobParams:
     company_background: str = ""
     memory_company_id: str = ""
     skip_asr_polish: bool = False
+    use_langgraph_v1: bool = False
+    agent_state_collector: Callable[[dict], None] | None = None
 
 
 def run_pitch_file_job(
@@ -195,26 +202,65 @@ def run_pitch_file_job(
     bg_use, bg_truncated = truncate_company_background(params.company_background or "")
     if bg_truncated:
         _line("⚠️ 公司背景超过 8000 字，已截取头部内容注入 Prompt。如需完整分析请精简档案内容。")
-    mem_cid = (params.memory_company_id or "").strip()
-    mem_tag = (params.explicit_context or {}).get("interviewee", "").strip()
-    # 「未指定」为占位，勿与真实高管标签混桶
-    _tag_ok = bool(mem_tag) and mem_tag != "未指定"
-    historical = (
-        load_top_executive_memories_for_prompt(mem_cid, mem_tag, limit=5)
-        if mem_cid and _tag_ok
-        else []
+
+    def _use_langgraph_v1() -> bool:
+        # 必须用「is True」：unittest.mock.MagicMock 对任意属性为 truthy，会误走 LangGraph
+        try:
+            flag = params.use_langgraph_v1
+        except AttributeError:
+            flag = False
+        if flag is True:
+            return True
+        return os.environ.get("USE_LANGGRAPH_V1", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+    tenant_id = (params.memory_company_id or "").strip() or (
+        (params.explicit_context or {}).get("project_name") or "unknown"
     )
-    if historical:
-        record_executive_memory_prompt_hits(mem_cid, mem_tag, historical)
-    report = evaluate_pitch(
-        words_for_llm,
-        model_choice=params.model_choice,
-        explicit_context=params.explicit_context,
-        qa_text=params.qa_text,
-        company_background=bg_use,
-        on_notice=_line,
-        historical_memories=historical or None,
-    )
+
+    lg = _use_langgraph_v1()
+    historical: list | None = None
+    if not lg:
+        mem_cid = (params.memory_company_id or "").strip()
+        mem_tag = (params.explicit_context or {}).get("interviewee", "").strip()
+        _tag_ok = bool(mem_tag) and mem_tag != "未指定"
+        historical_list = (
+            load_top_executive_memories_for_prompt(mem_cid, mem_tag, limit=5)
+            if mem_cid and _tag_ok
+            else []
+        )
+        if historical_list:
+            record_executive_memory_prompt_hits(mem_cid, mem_tag, historical_list)
+        historical = historical_list or None
+
+    if lg:
+        report, state_excerpt = run_pitch_evaluation_via_langgraph_with_state(
+            tenant_id=tenant_id,
+            words=words_for_llm,
+            model_choice=params.model_choice,
+            explicit_context=params.explicit_context,
+            qa_text=params.qa_text,
+            company_background=bg_use,
+            on_notice=_line,
+        )
+        if callable(params.agent_state_collector):
+            try:
+                params.agent_state_collector(state_excerpt)
+            except Exception:
+                logger.exception("agent_state_collector 回调失败")
+    else:
+        report = evaluate_pitch(
+            words_for_llm,
+            model_choice=params.model_choice,
+            explicit_context=params.explicit_context,
+            qa_text=params.qa_text,
+            company_background=bg_use,
+            on_notice=_line,
+            historical_memories=historical,
+        )
     if skip_html_export:
         _line("✂️ AI 初稿已生成，等待人工审查台确认后再导出 HTML...")
     else:

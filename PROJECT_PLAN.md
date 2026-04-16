@@ -35,7 +35,7 @@
   - **磁盘级 ASR 缓存**（`disk_asr_cache.py`）：MD5 哈希键 + 原子写入，三级缓存（内存→磁盘→云端），实现跨 session 永久免费秒开。
   - **项目专属热词库**：UI 文本框 → `transcribe_siliconflow initial_prompt` 注入，从源头提升专有名词识别率。
   - **三道防线审查台**：第一道（V7.6 狙击清单保留）→ 第二道（`refine_risk_point` 局部精炼 + 双 Key 安全注入）→ 第三道（`polish_manual_risk_point` AI 润色无中生有）。
-  - **TDD**：新增 Mock 测试（含 disk_cache、hot_words、refinement 等）；全量 **`pytest tests/` → 74 passed**（以本机为准）。
+  - **TDD**：新增 Mock 测试（含 disk_cache、hot_words、refinement 等）；全量回归通过（详见对应阶段 `CHANGELOG.md` 记录）。
   - **Schema 六联动**：`needs_refinement`、`refinement_note` 同步 Prompt、审查台、测试。
   - **V7.6 已并入本阶段交付**：双 Key 狙击表；会话 `asr_cache` + 流水线 `cached_words` 跳过 ASR（详见 `tests/test_v76_asr_cache.py`）。
   - **`CLAUDE.md`**：四大铁律（红蓝对抗 / TDD / Streamlit 状态机 / JSON 抢救）；**`AGENTS.md`**：全模型统一握手与文件地图。
@@ -44,7 +44,7 @@
   - **Bug 1 领域幻觉根治**：`llm_judge._build_system_prompt` 注入 `<DOMAIN_ANCHOR>` 块，硬科技/军工/低空经济领域铁律，7 个歧义词强制技术解释，3 条绝对红线（禁止捏造法律叙事/机构名/人名）。
   - **Bug 2 狙击清单静默失效修复**：`st.data_editor` 在 session_state 存 delta dict 非 DataFrame；新增 `batch_sniper_result_{idx}` 安全 key 存完整 DataFrame 返回值，`_batch_sniper_targets_json` 优先读 result_key。
   - **Bug 3 转写无标点修复**：Paraformer REST 参数补全 `enable_punctuation_prediction=True` + `disfluency_removal_enabled=True`。
-  - 全量回归 **74 passed**。
+  - 全量回归通过。
 
 ## 四、 给 AI 助手 (Cursor) 的行为规范
 每次回答前，请仔细复习本文件。
@@ -54,7 +54,7 @@
 
 ## 🚀 v3.0 架构演进路线图 (Roadmap)
 
-**当前状态 (V9.6.2)**：在 V9.6.1「四连修」之上，完成**工业级稳定性十修**（转写兜底 GET、时间戳与缓存润色、路径截断、阶段一截断可感知、错题幂等、Dashboard IO、审查台防护、冲突检测降噪等，见 `CHANGELOG.md` / `V9.6.2_工业级稳定性十修_说明.txt`），全量 **`pytest tests/` → 262 passed**（Mock 外部 API）。
+**当前状态 (V10.7.0)**：已进入「融资作战室 MVP」阶段，新增左右分屏备战界面（倒计时、材料清单、历史弱点、DeepSeek 教练对话、语音输入、战后包扎），并完成红蓝对抗 P0~P3 稳定性加固。回归统计不再写死，统一以 `CHANGELOG.md` 最新条目为准（执行命令 `pytest tests/`，Mock 外部 API）。
 
 **产品提示（已实现/可配置）**：超大文档时应在业务侧拆分或提高截断阈值前评估 Token 与成本；侧边栏与 README 已强调「先 PDF/Word、非 PPT」等约束。
 
