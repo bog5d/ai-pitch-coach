@@ -1,5 +1,13 @@
 # 给 AI 助手（Cursor / Claude / 其它）的接手说明
 
+## 集团 SCP v3.8｜统一工程与目标验收入口
+
+集团上位规范唯一权威：https://github.com/bog5d/grill-to-spec/blob/main/SCP-v3.8.md 。执行 L1/L2 AI/开发/持续自动化任务，先读中央规范仓 README.md、START_HERE.md、SCP-v3.8.md、HARNESS.md，并按 GCCSEG 执行；本仓不复制SCP正文，也不替代现有项目事实源。
+
+AI Pitch Coach/FOS 真实目标是高管会前可用简报、准确可查的机构数据、合格评估及可复盘融资协作；代码版本/测试数量、界面存在不能代替真人实用与数据真实性。真实商业数据受原有敏感信息与人工审批限制。
+
+强制区分工程进度与用户最终效果已验证达成率；使用当前有效配置、真实使用场景、独立Evidence/Gate、硬门槛验证；历史资料/测试通过不能冒充实时业务成果，证据不足标 UNKNOWN。事故反例：https://github.com/bog5d/grill-to-spec/blob/main/docs/INCIDENT-20261014-GM-GOAL-DRIFT.md 。
+
 本文件是**跨工具的统一入口**：新会话先读本节「握手区」，再按顺序读架构文档，最后动代码。目标：**减少重复勘探、降低 token、避免踩已修过的坑**。
 
 ---
